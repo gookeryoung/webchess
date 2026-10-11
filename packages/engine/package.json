@@ -1,0 +1,22 @@
+{
+  "name": "@webchess/engine",
+  "version": "0.1.0",
+  "private": true,
+  "description": "内置中国象棋搜索引擎（alpha-beta + 置换表），纯 TypeScript，Web/小程序通用",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit"
+  },
+  "dependencies": {
+    "@webchess/core": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "vitest": "^3.2.4"
+  }
+}

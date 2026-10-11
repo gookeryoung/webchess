@@ -1,0 +1,294 @@
+:root {
+  --bg: #f6f1e6;
+  --panel: #fffdf7;
+  --ink: #2c2c2a;
+  --ink-dim: #5f5e5a;
+  --line: rgba(95, 94, 90, 0.18);
+  --accent: #a32d2d;
+  --accent-soft: #fcebeb;
+  --board: #f2dcae;
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--ink);
+  /* 触屏：禁用双击缩放与文本选择，保证棋盘点击手感 */
+  touch-action: manipulation;
+  -webkit-text-size-adjust: 100%;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.app {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 12px;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.app-header h1 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.practice-badge {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid rgba(163, 45, 45, 0.3);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12px;
+}
+
+.app-main {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-items: center;
+}
+
+/* 宽屏时棋盘与面板左右并排 */
+@media (min-width: 900px) {
+  .app-main {
+    flex-direction: row;
+    align-items: flex-start;
+  }
+
+  .board-wrapper {
+    flex: 1 1 auto;
+  }
+
+  .hud {
+    flex: 0 0 340px;
+  }
+}
+
+.board-wrapper {
+  width: 100%;
+  max-width: 640px;
+}
+
+.board-canvas {
+  display: block;
+  margin: 0 auto;
+  background: var(--board);
+  border-radius: 10px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  touch-action: none;
+  cursor: pointer;
+}
+
+.hud {
+  width: 100%;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.status {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink);
+  background: rgba(241, 239, 232, 0.8);
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-height: 44px;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.btn {
+  min-height: 44px;
+  padding: 0 14px;
+  font-size: 14px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  cursor: pointer;
+  flex: 1 1 auto;
+  min-width: 76px;
+}
+
+.btn:hover {
+  border-color: rgba(95, 94, 90, 0.4);
+}
+
+.btn:active {
+  transform: translateY(1px);
+}
+
+.btn-on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.badge {
+  font-size: 13px;
+  color: var(--ink-dim);
+  align-self: center;
+}
+
+.eval {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  background: #fbfaf6;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px;
+  max-height: 160px;
+  overflow: auto;
+}
+
+.eval-line {
+  padding: 2px 0;
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--ink-dim);
+}
+
+.busy {
+  color: var(--accent);
+}
+
+.over {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.warn {
+  color: #854f0b;
+}
+
+.hint {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--ink-dim);
+  line-height: 1.6;
+}
+
+/* 弹窗 */
+.modal-mask {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 20;
+}
+
+.modal {
+  background: var(--panel);
+  border-radius: 12px;
+  padding: 16px;
+  width: min(560px, 100%);
+  max-height: 80vh;
+  overflow: auto;
+}
+
+.modal-title {
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.modal-body {
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.modal-actions .btn {
+  flex: 0 0 auto;
+}
+
+.pick-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pick-item {
+  width: 100%;
+  min-height: 44px;
+  text-align: left;
+  padding: 0 12px;
+  font-size: 14px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: #fff;
+  cursor: pointer;
+}
+
+.pick-item:hover {
+  border-color: var(--accent);
+}
+
+.fen-input {
+  width: 100%;
+  min-height: 44px;
+  font-size: 13px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+}
+
+.field input[type='range'] {
+  flex: 1;
+}

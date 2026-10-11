@@ -1,0 +1,20 @@
+{
+  "name": "webchess",
+  "version": "0.1.0",
+  "private": true,
+  "description": "中国象棋训练与 AI 练习工具（Web 版，内核平台无关，可平滑迁移小程序）",
+  "license": "MIT",
+  "scripts": {
+    "build": "pnpm -r run build",
+    "test": "pnpm -r run test",
+    "typecheck": "pnpm -r run typecheck",
+    "dev": "pnpm --filter @webchess/web dev",
+    "smoke": "node scripts/smoke-core.mjs",
+    "smoke:web": "node scripts/smoke-web.mjs",
+    "check:purity": "node scripts/check-core-purity.mjs",
+    "check": "pnpm run typecheck && pnpm run check:purity && pnpm run test && pnpm run build && pnpm run smoke && pnpm run smoke:web"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

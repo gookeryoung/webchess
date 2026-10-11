@@ -1,0 +1,10 @@
+[Event "SuperChess 测试对局"]
+[Site "SuperChess"]
+[Date "2026.10.03"]
+[Round "1"]
+[Red "红方测试"]
+[Black "黑方测试"]
+[Result "1-0"]
+[FEN "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1"]
+
+1. h2e2 h9g7 2. h0g2 b9c7 3. i0h0 i9h9 1-0
