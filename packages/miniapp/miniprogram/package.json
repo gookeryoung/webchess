@@ -1,0 +1,7 @@
+{
+  "name": "superchess-miniprogram",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "小程序运行目录：lib/ workers/ images/ sounds/ 由 scripts/build.mjs 生成"
+}

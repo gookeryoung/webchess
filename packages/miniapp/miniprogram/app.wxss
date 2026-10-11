@@ -1,0 +1,6 @@
+/* SuperChess 象棋 - 全局样式 */
+page {
+  background-color: #f2dcae;
+  color: #4a3728;
+  font-size: 28rpx;
+}

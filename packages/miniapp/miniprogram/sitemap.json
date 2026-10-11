@@ -1,0 +1,9 @@
+{
+  "desc": "SuperChess 象棋",
+  "rules": [
+    {
+      "action": "allow",
+      "page": "*"
+    }
+  ]
+}

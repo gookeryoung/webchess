@@ -11,8 +11,10 @@
     "dev": "pnpm --filter @webchess/web dev",
     "smoke": "node scripts/smoke-core.mjs",
     "smoke:web": "node scripts/smoke-web.mjs",
+    "smoke:miniapp": "node scripts/smoke-miniapp.mjs",
+    "miniapp": "pnpm --filter @webchess/miniapp run build && pnpm run smoke:miniapp",
     "check:purity": "node scripts/check-core-purity.mjs",
-    "check": "pnpm run typecheck && pnpm run check:purity && pnpm run test && pnpm run build && pnpm run smoke && pnpm run smoke:web"
+    "check": "pnpm run typecheck && pnpm run check:purity && pnpm run test && pnpm run build && pnpm run miniapp && pnpm run smoke && pnpm run smoke:web"
   },
   "engines": {
     "node": ">=20"

@@ -1,0 +1,5 @@
+<view class="container">
+  <view class="title">{{title}}</view>
+  <view class="subtitle">{{subtitle}}</view>
+  <button class="start" type="primary" bindtap="onGoGame">开始对局</button>
+</view>

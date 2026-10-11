@@ -1,0 +1,22 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 240rpx;
+}
+
+.title {
+  font-size: 56rpx;
+  font-weight: bold;
+  letter-spacing: 8rpx;
+}
+
+.subtitle {
+  margin-top: 24rpx;
+  color: #8a5a2b;
+}
+
+.start {
+  margin-top: 160rpx;
+  width: 420rpx;
+}

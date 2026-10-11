@@ -1,0 +1,23 @@
+{
+  "name": "@webchess/miniapp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "微信小程序端（原生框架）：复用 @webchess/core / engine / adapters 接口与 Web 版 AppController；构建产物输出到 miniprogram/，用微信开发者工具打开该目录即可预览发布",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@webchess/adapters": "workspace:*",
+    "@webchess/core": "workspace:*",
+    "@webchess/engine": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "esbuild": "^0.25.12",
+    "typescript": "^5.7.3",
+    "vitest": "^3.2.4"
+  }
+}

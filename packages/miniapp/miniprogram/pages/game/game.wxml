@@ -1,0 +1,31 @@
+<view class="page">
+  <view class="hud">
+    <text class="mode">{{modeText}}</text>
+    <text class="turn">{{turnText}}</text>
+    <text class="count">第 {{moveCount}} 手</text>
+  </view>
+
+  <view class="status-row">
+    <text class="status">{{status}}</text>
+  </view>
+
+  <canvas
+    type="2d"
+    id="board"
+    class="board"
+    style="height: {{boardHeight}}px;"
+    bindtouchend="onTouchEnd"
+  ></canvas>
+
+  <view class="last-row">
+    <text>上一手：{{lastText}}</text>
+  </view>
+
+  <view class="actions">
+    <button size="mini" bindtap="onNewGame" disabled="{{busy}}">新对局</button>
+    <button size="mini" bindtap="onUndo" disabled="{{busy}}">悔棋</button>
+    <button size="mini" bindtap="onHint" disabled="{{busy}}">提示</button>
+    <button size="mini" bindtap="onToggleMode" disabled="{{busy}}">{{modeButton}}</button>
+    <button size="mini" bindtap="onToggleSound">{{soundOn ? '音效开' : '音效关'}}</button>
+  </view>
+</view>

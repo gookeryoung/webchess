@@ -1,0 +1,14 @@
+{
+  "pages": [
+    "pages/index/index",
+    "pages/game/game"
+  ],
+  "window": {
+    "navigationBarTitleText": "SuperChess 象棋",
+    "navigationBarBackgroundColor": "#f2dcae",
+    "navigationBarTextStyle": "black",
+    "backgroundColor": "#f2dcae"
+  },
+  "workers": "workers",
+  "sitemapLocation": "sitemap.json"
+}

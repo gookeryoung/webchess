@@ -1,0 +1,43 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16rpx 24rpx 32rpx;
+}
+
+.hud {
+  display: flex;
+  gap: 32rpx;
+  align-items: center;
+  font-size: 26rpx;
+  color: #8a5a2b;
+}
+
+.status-row {
+  margin-top: 8rpx;
+  height: 40rpx;
+}
+
+.status {
+  font-size: 26rpx;
+  color: #4a3728;
+}
+
+.board {
+  width: 100%;
+  margin-top: 8rpx;
+}
+
+.last-row {
+  margin-top: 8rpx;
+  font-size: 26rpx;
+  color: #8a5a2b;
+}
+
+.actions {
+  display: flex;
+  gap: 16rpx;
+  margin-top: 20rpx;
+  flex-wrap: wrap;
+  justify-content: center;
+}
