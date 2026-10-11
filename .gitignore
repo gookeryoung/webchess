@@ -6,3 +6,13 @@ coverage/
 .vscode/
 .idea/
 *.tsbuildinfo
+.pnpm-store/
+
+# 本地协作产物（需求/迭代记录），不进入版本库
+/.trae/
+
+# 小程序构建产物（esbuild 生成，构建脚本可复现）
+packages/miniapp/miniprogram/lib/
+packages/miniapp/miniprogram/workers/
+packages/miniapp/miniprogram/images/
+packages/miniapp/miniprogram/sounds/
