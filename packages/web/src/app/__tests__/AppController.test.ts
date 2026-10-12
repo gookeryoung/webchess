@@ -2,8 +2,22 @@
 // 说明：本文件经 import.meta.url 读取 core/test-data 棋谱文件，jsdom 环境下
 // import.meta.url 是 http 方案（readFileSync 拒绝非 file URL），故显式回到 node 环境。
 import { readFileSync } from 'node:fs';
-import { beforeEach, describe, expect, it } from 'vitest';
-import { GameMode, LessonLibrary, Piece, Position, PuzzleLibrary } from '@webchess/core';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  GameMode,
+  LessonLibrary,
+  Piece,
+  Position,
+  PuzzleLibrary,
+} from '@webchess/core';
+import type {
+  CancellationToken,
+  EngineOptions,
+  EngineSession,
+  GoParams,
+  MultiPvInfo,
+  SearchResult,
+} from '@webchess/core';
 import type { AudioPlayer, KeyValueStorage, SoundEffect } from '@webchess/adapters';
 import { AppController } from '../AppController.js';
 
@@ -51,6 +65,53 @@ function puzzleById(id: string) {
 function readManual(name: string): Uint8Array {
   const file = readFileSync(new URL(`../../../../core/test-data/${name}`, import.meta.url));
   return new Uint8Array(file);
+}
+
+/**
+ * 测试引擎：分析请求（multiPv）立即返回；走子请求挂起待测试释放，
+ * 用于精确控制引擎"思考"时长与应招内容。
+ */
+class ScriptedEngine implements EngineSession {
+  readonly requests: GoParams[] = [];
+  private readonly gates: ((result: SearchResult) => void)[] = [];
+  isReady = true;
+
+  onInfo(_listener: (info: MultiPvInfo) => void): () => void {
+    return () => undefined;
+  }
+
+  async start(): Promise<void> {
+    this.isReady = true;
+  }
+
+  async go(params: GoParams, _token?: CancellationToken): Promise<SearchResult> {
+    this.requests.push(params);
+    if (params.multiPv !== undefined) {
+      return { bestMove: null, ponderMove: null };
+    }
+
+    return new Promise<SearchResult>((resolve) => {
+      this.gates.push(resolve);
+    });
+  }
+
+  async applyOptions(_options: EngineOptions): Promise<void> {}
+
+  stop(): void {}
+
+  async dispose(): Promise<void> {
+    this.isReady = false;
+  }
+
+  /** 释放一次挂起的走子搜索并返回指定 bestmove。 */
+  releaseGo(bestMove: string): void {
+    this.gates.shift()?.({ bestMove, ponderMove: null });
+  }
+
+  /** 已发出的走子（非分析）请求数。 */
+  get moveRequests(): readonly GoParams[] {
+    return this.requests.filter((p) => p.multiPv === undefined);
+  }
 }
 
 describe('AppController 五态路由', () => {
@@ -265,5 +326,93 @@ describe('AppController 五态路由', () => {
     // 越界跳转不生效
     controller.manualGotoDepth(9);
     expect(controller.getSnapshot().manualDepth).toBe(2);
+  });
+});
+
+describe('AppController 人机模式回归（busy 门闸竞争 / 悔棋方向 / 点击反馈）', () => {
+  let storage: MemoryStorage;
+  let audio: RecordingAudio;
+  let engine: ScriptedEngine;
+  let controller: AppController;
+
+  beforeEach(() => {
+    storage = new MemoryStorage();
+    audio = new RecordingAudio();
+    engine = new ScriptedEngine();
+    controller = new AppController(storage, audio, engine, true);
+    controller.toggleMode(); // 切人机：用户执红先行
+    expect(controller.getSnapshot().mode).toBe(GameMode.PlayWithEngine);
+  });
+
+  it('用户走子后引擎及时应手，无需切换模式（分析抢占门闸回归）', async () => {
+    // 开启分析（历史上此处会抢占忙闲门闸，导致引擎走子请求被拒）。
+    await controller.analyze();
+    expect(engine.requests.filter((p) => p.multiPv !== undefined)).toHaveLength(1);
+
+    controller.onBoardClick(new Position(7, 7)); // 选红炮
+    controller.onBoardClick(new Position(4, 7)); // 炮二平五
+
+    // 引擎走子请求已发出（未被分析抢占）。
+    await vi.waitFor(() => {
+      expect(engine.moveRequests).toHaveLength(1);
+    });
+    expect(controller.getSnapshot().busy).toBe(true);
+
+    engine.releaseGo('h9g7'); // 引擎应招：马 8 进 7
+    await vi.waitFor(() => {
+      const snap = controller.getSnapshot();
+      expect(snap.history).toHaveLength(2);
+      expect(snap.busy).toBe(false);
+      expect(snap.redToMove).toBe(true);
+    });
+    expect(controller.getSnapshot().lastMove?.toUcci()).toBe('h9g7');
+
+    // 引擎落子后自动补跑挂起的分析（初始 1 次 + 引擎走子后 1 次）。
+    await vi.waitFor(() => {
+      expect(engine.requests.filter((p) => p.multiPv !== undefined)).toHaveLength(2);
+    });
+  });
+
+  it('人机模式悔棋后轮到用户时引擎不代走（悔棋方向回归）', async () => {
+    controller.onBoardClick(new Position(7, 7));
+    controller.onBoardClick(new Position(4, 7)); // 用户走子
+    await vi.waitFor(() => expect(engine.moveRequests).toHaveLength(1));
+    engine.releaseGo('h9g7');
+    await vi.waitFor(() => expect(controller.getSnapshot().history).toHaveLength(2));
+
+    controller.undo(); // 人机模式连退两步：回到用户（红方）行棋
+    const snap = controller.getSnapshot();
+    expect(snap.history).toHaveLength(0);
+    expect(snap.redToMove).toBe(true);
+
+    // 等待若干事件循环后引擎仍未被请求走子（此前会替红方走一步）。
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(engine.moveRequests).toHaveLength(1);
+    expect(controller.getSnapshot().history).toHaveLength(0);
+  });
+
+  it('引擎思考中点击棋盘给出提示而非静默忽略（点击反馈回归）', async () => {
+    controller.onBoardClick(new Position(7, 7));
+    controller.onBoardClick(new Position(4, 7)); // 用户走子，引擎开始思考
+    await vi.waitFor(() => expect(controller.getSnapshot().busy).toBe(true));
+
+    controller.onBoardClick(new Position(0, 0));
+    expect(controller.getSnapshot().status).toBe('引擎思考中，请稍候…');
+
+    engine.releaseGo('h9g7');
+    await vi.waitFor(() => expect(controller.getSnapshot().history).toHaveLength(2));
+  });
+
+  it('切人机时轮到黑方则引擎立即应手', async () => {
+    const fresh = new AppController(storage, audio, engine, true);
+    // 双人模式先替黑方走一步，使切人机时轮黑。
+    fresh.toggleMode(); // → 人机（红先，不触发）
+    fresh.toggleMode(); // → 双人
+    fresh.onBoardClick(new Position(7, 7));
+    fresh.onBoardClick(new Position(4, 7)); // 红方走子，双人模式下轮黑
+    fresh.toggleMode(); // → 人机且轮黑：引擎立即应手
+    await vi.waitFor(() => expect(engine.moveRequests).toHaveLength(1));
+    engine.releaseGo('h9g7');
+    await vi.waitFor(() => expect(fresh.getSnapshot().history).toHaveLength(2));
   });
 });

@@ -86,20 +86,35 @@ describe('hitTest', () => {
     expect(hitTest(g, -10, -10)).toBeNull();
   });
 
-  it('格子间隙正中心返回 null（触屏放宽后仍在 90% 以内）', () => {
-    // 两格中心之间的正中点 (x=0.5*cell 位置)，距离两边中心各 50px，
-    // reach = max(40.5, 45) = 45，因此 50 > 45 → 返回 null
-    const betweenX = 56 + 100 * 0.5; // 在 x=0 和 x=1 中心正中间
+  it('格子间隙正中点吸附到最近交叉点（无死区）', () => {
+    // 两格中心之间的正中点：最近邻吸附（reach = cell/2 = 50），
+    // 不再因 10% 死区而点空——修复"棋子选取困难"。
+    const betweenX = 56 + 100 * 0.5; // x=0 与 x=1 中心正中间
     const result = hitTest(g, betweenX, 43);
-    // 精确中点：距 x=0 中心 50px，距 reach 45px，超出 → null
-    expect(result).toBeNull();
+    expect(result).toBeInstanceOf(Position);
+    expect(result?.y).toBe(0);
+    expect([0, 1]).toContain(result?.x);
   });
 
   it('靠近交叉点但有偏移仍能命中（触屏放宽规则）', () => {
-    // 距离中心 40px 的位置应命中（< reach=45）
+    // 距离中心 40px 的位置应命中（< reach=50）
     const center = cellCenter(g, 4, 4);
     const result = hitTest(g, center.x + 40, center.y - 40);
     expect(result).toBeInstanceOf(Position);
+  });
+
+  it('网格内任意点必命中最近交叉点（全覆盖）', () => {
+    // 在整个棋盘网格区域均匀采样，任何一点都应命中某个交叉点。
+    for (let fx = 0; fx <= 8; fx += 0.25) {
+      for (let fy = 0; fy <= 9; fy += 0.25) {
+        const px = 56 + fx * 100;
+        const py = 43 + fy * 100;
+        const p = hitTest(g, px, py);
+        expect(p).not.toBeNull();
+        expect(Math.abs(p!.x - fx)).toBeLessThanOrEqual(0.5);
+        expect(Math.abs(p!.y - fy)).toBeLessThanOrEqual(0.5);
+      }
+    }
   });
 
   it('Position 边界覆盖棋盘全部格', () => {

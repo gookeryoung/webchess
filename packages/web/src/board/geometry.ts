@@ -40,8 +40,9 @@ export function cellCenter(g: BoardGeometry, x: number, y: number): { x: number;
 }
 
 /**
- * 命中测试：像素坐标 → 交叉点；落在棋子矩形之外返回 null。
- * 与原 BoardView.TryHit 同语义（只认棋子可点击区域，避免格子间空隙误触）。
+ * 命中测试：像素坐标 → 最近交叉点；远离棋盘网格返回 null。
+ * 命中半径为半个格距（最近邻吸附），交叉点之间无死区——
+ * 触屏手指中心偏移也能稳定选中，不再出现"点不中棋子"。
  */
 export function hitTest(g: BoardGeometry, px: number, py: number): Position | null {
   const ix = Math.round((px - g.paddingX) / g.cell);
@@ -51,9 +52,7 @@ export function hitTest(g: BoardGeometry, px: number, py: number): Position | nu
   }
 
   const center = cellCenter(g, ix, iy);
-  const half = g.pieceSize / 2;
-  // 触屏手指较粗，命中判定放宽到整个格距的 90%。
-  const reach = Math.max(half, g.cell * 0.45);
+  const reach = g.cell / 2;
   if (Math.abs(px - center.x) > reach || Math.abs(py - center.y) > reach) {
     return null;
   }

@@ -69,3 +69,22 @@ test('打谱：打开内置棋谱并逐步前进', async ({ page }) => {
 
   expect(errors, errors.join('\n')).toEqual([]);
 });
+
+test('人机模式：用户走子后引擎自动应手，无需切换模式', async ({ page }) => {
+  const errors = await openApp(page);
+
+  await page.getByRole('button', { name: '双人' }).click(); // 切换到人机模式
+  await expect(page.getByText('人机模式：你执红先行')).toBeVisible();
+
+  await clickIntersection(page, 7, 7); // 选红炮
+  await clickIntersection(page, 4, 7); // 炮二平五
+
+  // 引擎占用忙闲门闸：HUD 出现思考中提示。
+  await expect(page.getByText('思考中…')).toBeVisible();
+
+  // 引擎在走子时限内应手：状态栏出现黑方着法（回归：此前需反复切换模式才能触发）。
+  await expect(page.getByText(/黑方：/)).toBeVisible({ timeout: 10000 });
+  // 回合回到红方。
+  await expect(page.getByText('红方走子')).toBeVisible();
+  expect(errors, errors.join('\n')).toEqual([]);
+});

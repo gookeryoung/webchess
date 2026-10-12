@@ -124,6 +124,13 @@ export class AppController {
   private practiceHint = '';
   /** 打谱跳转重放中：抑制逐着音效/状态/分析刷新，仅由跳转终点统一收口。 */
   private replaying = false;
+  /**
+   * 分析待重试标记：走子/悔棋触发分析刷新时若引擎正占用忙闲门闸
+   * （人机模式引擎走子优先），先挂起，待门闸释放后自动重试。
+   */
+  private analysisPending = false;
+  /** 分析进行中标记：防止引擎落子后排队的分析微任务重复触发一轮分析。 */
+  private analysisRunning = false;
 
   constructor(
     private readonly storage: KeyValueStorage,
@@ -144,7 +151,17 @@ export class AppController {
       this.hint = move;
       this.setStatus(`提示：${ChineseNotation.toChinese(this.session.board, move)}`);
     });
-    this.session.onBusyChanged(() => this.emit());
+    this.session.onBusyChanged((busy) => {
+      // 忙闲释放后补跑被挂起的分析（人机模式引擎走子完成后刷新评估）。
+      if (!busy && this.analysisPending) {
+        this.analysisPending = false;
+        if (this.analysisActive) {
+          void this.refreshAnalysis();
+        }
+      }
+
+      this.emit();
+    });
   }
 
   // ---------- 订阅 ----------
@@ -210,6 +227,8 @@ export class AppController {
   /** 棋盘点击（两段式：选子 → 落子）。 */
   onBoardClick(pos: Position): void {
     if (this.session.busy) {
+      // 引擎思考中：明确告知用户而非静默吞掉点击。
+      this.setStatus('引擎思考中，请稍候…');
       return;
     }
 
@@ -423,7 +442,9 @@ export class AppController {
     }
 
     this.setStatus('已悔棋');
-    if (this.session.mode === GameMode.PlayWithEngine) {
+    // 人机模式悔棋后通常轮到用户（连退引擎与用户各一步）；
+    // 仅当仍轮到引擎（黑方）时才请求引擎走子，避免引擎替用户走棋。
+    if (this.session.mode === GameMode.PlayWithEngine && !this.session.board.redToMove) {
       void this.playEngineMove();
     }
   }
@@ -439,6 +460,7 @@ export class AppController {
     this.analysisActive = !this.analysisActive;
     if (!this.analysisActive) {
       this.evalLines = [];
+      this.analysisPending = false;
       this.emit();
       return;
     }
@@ -447,19 +469,38 @@ export class AppController {
   }
 
   private async refreshAnalysis(): Promise<void> {
-    if (!this.analysisActive || this.session.busy) {
-      return;
-    }
-
-    const infos = await this.session.analyzeAsync(GameSession.DefaultAnalyzeMultiPv);
     if (!this.analysisActive) {
       return;
     }
 
-    this.evalLines = infos.map(
-      (info) => `#${info.index} 深度 ${info.depth} ${formatScore(info)} ${info.pv.join(' ')}`,
-    );
-    this.emit();
+    // 已有一次分析在跑：其局面即当前局面（busy 门闸保证分析期间棋盘不变），
+    // 无需重复发起。
+    if (this.analysisRunning) {
+      return;
+    }
+
+    if (this.session.busy) {
+      // 门闸被占用（人机模式引擎走子优先）：挂起，待忙闲释放后由
+      // onBusyChanged 补跑，避免抢占门闸导致引擎走子请求被拒。
+      this.analysisPending = true;
+      return;
+    }
+
+    this.analysisPending = false;
+    this.analysisRunning = true;
+    try {
+      const infos = await this.session.analyzeAsync(GameSession.DefaultAnalyzeMultiPv);
+      if (!this.analysisActive) {
+        return;
+      }
+
+      this.evalLines = infos.map(
+        (info) => `#${info.index} 深度 ${info.depth} ${formatScore(info)} ${info.pv.join(' ')}`,
+      );
+      this.emit();
+    } finally {
+      this.analysisRunning = false;
+    }
   }
 
   toggleMode(): void {
@@ -797,7 +838,10 @@ export class AppController {
       this.setStatus(`${e.isRedMove ? '红' : '黑'}方：${e.chinese}`);
     }
 
-    void this.refreshAnalysis();
+    // 延迟到微任务：人机模式下人类走子后，submitMove 会在同一同步块内
+    // 请求引擎走子（同步占用忙闲门闸）；若在此处直接刷新分析会抢先占住
+    // 门闸，导致引擎走子请求被拒（表现为引擎不下棋，需反复切换模式）。
+    queueMicrotask(() => void this.refreshAnalysis());
   }
 
   private onBoardReverted(): void {
@@ -814,7 +858,8 @@ export class AppController {
       this.showBranchArrows();
     }
 
-    void this.refreshAnalysis();
+    // 与 onMoveApplied 同理：悔棋后人机模式可能立即请求引擎走子，分析延后。
+    queueMicrotask(() => void this.refreshAnalysis());
   }
 
   private showBranchArrows(): void {
