@@ -1,5 +1,6 @@
 import { createGamePage } from '../pages/gamePage.js';
 import { createIndexPage } from '../pages/indexPage.js';
+import { createPracticePage } from '../pages/practicePage.js';
 
 /**
  * 小程序应用与页面的统一入口（esbuild 打包为 miniprogram/lib/app.js，
@@ -18,7 +19,7 @@ export function createApp(): { onLaunch(): void } {
   };
 }
 
-export { createGamePage, createIndexPage };
+export { createGamePage, createIndexPage, createPracticePage };
 export { createWxStorage } from '../storage.js';
 export { createWxAudioPlayer } from '../audio.js';
 export { WxWorkerEngineClient } from '../engineClient.js';

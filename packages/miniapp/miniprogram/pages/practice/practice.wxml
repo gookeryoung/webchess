@@ -1,0 +1,48 @@
+<view class="page">
+  <view class="hud">
+    <text class="kind">{{kindText}}</text>
+    <text wx:if="{{depthText}}" class="count">{{depthText}}</text>
+    <view class="spacer"></view>
+    <button size="mini" bindtap="onToggleList">{{showList ? '收起' : '题库'}}</button>
+    <button size="mini" bindtap="onExit">退出</button>
+  </view>
+
+  <view class="status-row">
+    <text class="status">{{status}}</text>
+  </view>
+  <view wx:if="{{hintText}}" class="hint-row">
+    <text class="hint">{{hintText}}</text>
+  </view>
+
+  <canvas
+    type="2d"
+    id="board"
+    class="board"
+    style="height: {{boardHeight}}px;"
+    bindtouchend="onTouchEnd"
+  ></canvas>
+
+  <view wx:if="{{isManual && manualMode}}" class="actions">
+    <button size="mini" bindtap="onBack">后退</button>
+    <button size="mini" bindtap="onForward">前进</button>
+    <button size="mini" bindtap="onRewind">回开局</button>
+  </view>
+
+  <view wx:if="{{showList}}" class="panel">
+    <view
+      wx:for="{{rows}}"
+      wx:key="index"
+      class="row {{item.current ? 'is-current' : ''}}"
+      data-index="{{item.index}}"
+      bindtap="onPickRow"
+    >
+      <view wx:if="{{isManual && manualMode}}" class="no">{{item.index}}</view>
+      <view class="main">
+        <text class="title">{{item.title}}</text>
+        <text wx:if="{{item.sub}}" class="sub">{{item.sub}}</text>
+      </view>
+      <view wx:if="{{item.solved}}" class="seal">过</view>
+      <text wx:if="{{item.flag}}" class="flag">{{item.flag}}</text>
+    </view>
+  </view>
+</view>

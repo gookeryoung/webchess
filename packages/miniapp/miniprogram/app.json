@@ -1,7 +1,8 @@
 {
   "pages": [
     "pages/index/index",
-    "pages/game/game"
+    "pages/game/game",
+    "pages/practice/practice"
   ],
   "window": {
     "navigationBarTitleText": "SuperChess 象棋",

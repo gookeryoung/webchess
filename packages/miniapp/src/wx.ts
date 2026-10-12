@@ -36,6 +36,15 @@ export type WxApi = {
   getWindowInfo(): { pixelRatio: number; windowWidth: number; windowHeight: number };
   nextTick(cb: () => void): void;
   navigateTo(options: { url: string }): void;
+  navigateBack(options?: { delta?: number }): void;
+  getFileSystemManager(): {
+    readFile(options: {
+      filePath: string;
+      encoding?: string;
+      success: (res: { data: ArrayBuffer | string }) => void;
+      fail: (error: { errMsg?: string }) => void;
+    }): void;
+  };
 };
 
 /** 读取全局 wx 对象；非小程序环境返回 null（便于单测注入 mock）。 */

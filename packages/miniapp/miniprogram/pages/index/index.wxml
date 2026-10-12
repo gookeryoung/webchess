@@ -2,4 +2,7 @@
   <view class="title">{{title}}</view>
   <view class="subtitle">{{subtitle}}</view>
   <button class="start" type="primary" bindtap="onGoGame">开始对局</button>
+  <button class="entry" bindtap="onGoPractice" data-kind="lesson">教学课程</button>
+  <button class="entry" bindtap="onGoPractice" data-kind="puzzle">残局练习</button>
+  <button class="entry" bindtap="onGoPractice" data-kind="manual">打谱棋谱</button>
 </view>

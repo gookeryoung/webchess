@@ -23,13 +23,13 @@ console.log('--- 小程序构建冒烟 ---');
 check('app.json 可解析', (() => {
   try {
     const config = JSON.parse(readFileSync(mini('app.json'), 'utf8'));
-    return Array.isArray(config.pages) && config.pages.length === 2 && config.workers === 'workers';
+    return Array.isArray(config.pages) && config.pages.length === 3 && config.workers === 'workers';
   } catch {
     return false;
   }
 })());
 
-for (const page of ['pages/index/index', 'pages/game/game']) {
+for (const page of ['pages/index/index', 'pages/game/game', 'pages/practice/practice']) {
   for (const ext of ['js', 'wxml', 'json']) {
     check(`页面文件 ${page}.${ext}`, existsSync(mini(page + '.' + ext)));
   }
@@ -59,6 +59,7 @@ try {
     'createApp',
     'createIndexPage',
     'createGamePage',
+    'createPracticePage',
     'createWxStorage',
     'createWxAudioPlayer',
     'WxWorkerEngineClient',
@@ -80,6 +81,15 @@ check('音效 5 个（ogg 已排除）', (() => {
   try {
     const files = readdirSync(mini('sounds')).filter((f) => !f.endsWith('.ogg'));
     return files.length === 5 && !files.some((f) => f.endsWith('.ogg'));
+  } catch {
+    return false;
+  }
+})());
+
+check('内置棋谱 3 份（打谱用 XQF）', (() => {
+  try {
+    const files = readdirSync(mini('manuals')).filter((f) => f.endsWith('.xqf'));
+    return files.length === 3;
   } catch {
     return false;
   }

@@ -35,11 +35,17 @@ await build({
   outfile: out('workers', 'engine', 'index.js'),
 });
 
-// 复制 Web 版静态资源：棋子贴图与受支持的音效（ogg 不复制——小程序不支持）。
+// 复制 Web 版静态资源：棋子贴图、内置棋谱与受支持的音效（ogg 不复制——小程序不支持）。
 const piecesDir = out('images', 'pieces');
 mkdirSync(piecesDir, { recursive: true });
 for (const file of readdirSync(join(webPublic, 'pieces'))) {
   copyFileSync(join(webPublic, 'pieces', file), join(piecesDir, file));
+}
+
+const manualsDir = out('manuals');
+mkdirSync(manualsDir, { recursive: true });
+for (const file of readdirSync(join(webPublic, 'manuals'))) {
+  copyFileSync(join(webPublic, 'manuals', file), join(manualsDir, file));
 }
 
 const soundsDir = out('sounds');
