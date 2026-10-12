@@ -84,7 +84,7 @@ export class Searcher {
     }
 
     for (let depth = 1; depth <= maxDepth; depth++) {
-      const result = this.searchRoot(board, rootMoves, depth);
+      const result = this.searchRoot(board, rootMoves, depth, bestMove);
       if (this.aborted) {
         break;
       }
@@ -118,14 +118,22 @@ export class Searcher {
     };
   }
 
-  /** 根节点搜索：逐着打分并维护主变例。 */
+  /**
+   * 根节点搜索：逐着打分并维护主变例。
+   * 迭代加深各层把上一轮最佳着法排在首位（PV 着法优先），
+   * 使 alpha 剪枝更早发生——此前排序键漏掉了上轮最佳，与注释不符。
+   */
   private searchRoot(
     board: Board,
     rootMoves: Move[],
     depth: number,
+    prevBest: Move | null,
   ): { move: Move; score: number; pv: Move[] } {
-    // 上一轮的最佳着法优先（PV 着法排序）。
-    const ordered = [...rootMoves].sort((a, b) => captureScore(board, b) - captureScore(board, a));
+    const ordered = [...rootMoves].sort((a, b) => {
+      const aPv = prevBest !== null && a.equals(prevBest) ? 1_000_000 : 0;
+      const bPv = prevBest !== null && b.equals(prevBest) ? 1_000_000 : 0;
+      return bPv + captureScore(board, b) - (aPv + captureScore(board, a));
+    });
 
     let alpha = -Infinity;
     let best = ordered[0];
@@ -155,7 +163,8 @@ export class Searcher {
       return 0;
     }
 
-    if (this.cancelled() || (this.nodes & 1023) === 0 && now() > this.deadline) {
+    // 时限检查每 256 节点一次：粒度过粗会显著超出时限（人机对局响应变慢）。
+    if (this.cancelled() || (this.nodes & 255) === 0 && now() > this.deadline) {
       this.aborted = true;
       return 0;
     }

@@ -27,6 +27,12 @@ export class GameSession {
   /** 引擎搜索默认深度。 */
   static readonly DefaultSearchDepth = 12;
 
+  /**
+   * 引擎走子默认时限（毫秒）：迭代加深在时限内尽量搜深，
+   * 保证人机对局每步及时响应（深度只作为上限，不作为耗时保证）。
+   */
+  static readonly DefaultMoveTimeMs = 1000;
+
   /** 分析模式默认深度。 */
   static readonly DefaultAnalyzeDepth = 14;
 
@@ -344,9 +350,13 @@ export class GameSession {
     }
   }
 
-  /** 组装搜索请求参数（当前局面 + 默认深度）。 */
+  /** 组装搜索请求参数（当前局面 + 深度上限 + 走子时限）。 */
   private buildGoParams(): GoParams {
-    return { fen: this._board.toFen(), depth: this.searchDepth };
+    return {
+      fen: this._board.toFen(),
+      depth: this.searchDepth,
+      moveTimeMs: GameSession.DefaultMoveTimeMs,
+    };
   }
 
   /** 从初始局面重放历史恢复当前局面。 */

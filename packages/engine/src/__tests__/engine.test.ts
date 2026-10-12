@@ -64,4 +64,12 @@ describe('内置搜索引擎', () => {
     expect(outcome.stats.depth).toBeGreaterThanOrEqual(1);
     expect(outcome.stats.nodes).toBeGreaterThan(0);
   });
+
+  it('moveTimeMs 时限被遵守：深度上限很大时也及时返回', () => {
+    // 人机对局响应速度回归：时限检查粒度 256 节点，超时后保留已完成层的结果。
+    const outcome = new Searcher().search(new Board(), { maxDepth: 99, moveTimeMs: 300 });
+    expect(outcome.stats.depth).toBeGreaterThanOrEqual(1);
+    expect(outcome.stats.elapsedMs).toBeLessThan(2000);
+    expect(outcome.bestMove).toBeInstanceOf(Move);
+  });
 });

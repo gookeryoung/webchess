@@ -101,6 +101,15 @@ describe('GameSession 对局流转与忙闲门闸', () => {
     expect(session.board.getPieceAt(new Position(7, 0))).toBe(Piece.BlackKnight);
   });
 
+  it('引擎走子请求携带深度上限与走子时限（人机及时应手）', async () => {
+    const task = session.requestEngineMoveAsync();
+    await fake.waitGoRequestedAsync();
+    expect(fake.requests[0].depth).toBe(GameSession.DefaultSearchDepth);
+    expect(fake.requests[0].moveTimeMs).toBe(GameSession.DefaultMoveTimeMs);
+    fake.release('h2e2');
+    expect(await task).toBe(true);
+  });
+
   it('分析（MultiPV）按 PV 序号收集最新 info', async () => {
     const task = session.analyzeAsync(3);
     await fake.waitGoRequestedAsync();
