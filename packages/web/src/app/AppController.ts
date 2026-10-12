@@ -118,6 +118,8 @@ export class AppController {
   private lastMove: Move | null = null;
   private lastMoveCapture: number | null = null;
   private evalLines: readonly string[] = [];
+  /** 分析启用时由 MultiPV 主变派生的未来步数箭头（序号 = PV 路数序）。 */
+  private analysisArrows: readonly { from: Position; to: Position }[] = [];
   private analysisActive = false;
   private practice: PracticeKind = 'none';
   private practiceTitle = '';
@@ -198,7 +200,11 @@ export class AppController {
       selected: this.selected,
       targets: this.targets,
       hint: this.hint,
-      arrows: this.arrows,
+      // 分析启用时优先展示 MultiPV 未来步数箭头；打谱分支箭头（选分支交互）例外保持优先。
+      arrows:
+        this.analysisActive && !this.manualController.isOpen && this.analysisArrows.length > 0
+          ? this.analysisArrows
+          : this.arrows,
       mode: this.session.mode,
       busy: this.session.busy,
       status: this.status,
@@ -460,6 +466,7 @@ export class AppController {
     this.analysisActive = !this.analysisActive;
     if (!this.analysisActive) {
       this.evalLines = [];
+      this.analysisArrows = [];
       this.analysisPending = false;
       this.emit();
       return;
@@ -497,6 +504,11 @@ export class AppController {
       this.evalLines = infos.map(
         (info) => `#${info.index} 深度 ${info.depth} ${formatScore(info)} ${info.pv.join(' ')}`,
       );
+      // 未来步数箭头：每路 PV 取首着，序号与颜色由渲染器按序区分。
+      this.analysisArrows = infos
+        .map((info) => (info.pv.length > 0 ? Move.fromUcci(info.pv[0]) : null))
+        .filter((move): move is Move => move !== null)
+        .map((move) => ({ from: move.from, to: move.to }));
       this.emit();
     } finally {
       this.analysisRunning = false;
@@ -853,6 +865,8 @@ export class AppController {
     this.targets = [];
     this.hint = null;
     this.evalLines = [];
+    // 局面已变化：过期 PV 箭头立即清除，待重跑分析后再刷新。
+    this.analysisArrows = [];
     this.emit();
     if (this.manualController.isOpen) {
       this.showBranchArrows();

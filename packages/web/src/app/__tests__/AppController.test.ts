@@ -74,10 +74,16 @@ function readManual(name: string): Uint8Array {
 class ScriptedEngine implements EngineSession {
   readonly requests: GoParams[] = [];
   private readonly gates: ((result: SearchResult) => void)[] = [];
+  private readonly infoListeners = new Set<(info: MultiPvInfo) => void>();
   isReady = true;
+  /** 分析请求（multiPv）返回的 MultiPV 信息；空数组表示无 info。 */
+  analysisInfos: readonly MultiPvInfo[] = [];
 
-  onInfo(_listener: (info: MultiPvInfo) => void): () => void {
-    return () => undefined;
+  onInfo(listener: (info: MultiPvInfo) => void): () => void {
+    this.infoListeners.add(listener);
+    return () => {
+      this.infoListeners.delete(listener);
+    };
   }
 
   async start(): Promise<void> {
@@ -87,6 +93,12 @@ class ScriptedEngine implements EngineSession {
   async go(params: GoParams, _token?: CancellationToken): Promise<SearchResult> {
     this.requests.push(params);
     if (params.multiPv !== undefined) {
+      for (const info of this.analysisInfos) {
+        for (const listener of [...this.infoListeners]) {
+          listener(info);
+        }
+      }
+
       return { bestMove: null, ponderMove: null };
     }
 
@@ -342,6 +354,47 @@ describe('AppController 人机模式回归（busy 门闸竞争 / 悔棋方向 / 
     controller = new AppController(storage, audio, engine, true);
     controller.toggleMode(); // 切人机：用户执红先行
     expect(controller.getSnapshot().mode).toBe(GameMode.PlayWithEngine);
+  });
+
+  it('分析启用时按 MultiPV 给出未来步数箭头（分色序号由渲染按序绘制）', async () => {
+    engine.analysisInfos = [
+      {
+        index: 1,
+        depth: 14,
+        scoreCp: 34,
+        isMate: false,
+        upperBound: false,
+        lowerBound: false,
+        pv: ['h2e2', 'h9g7'],
+      },
+      {
+        index: 2,
+        depth: 14,
+        scoreCp: 12,
+        isMate: false,
+        upperBound: false,
+        lowerBound: false,
+        pv: ['b2e2', 'b9c7'],
+      },
+    ];
+
+    await controller.analyze();
+    const snap = controller.getSnapshot();
+    expect(snap.analysisActive).toBe(true);
+    expect(snap.evalLines).toHaveLength(2);
+    expect(snap.arrows).toHaveLength(2);
+    // 箭头按 PV 序排列：#1 炮二平五（h2e2）、#2 炮八平五（b2e2）。
+    expect(snap.arrows[0]!.from.equals(new Position(7, 7))).toBe(true);
+    expect(snap.arrows[0]!.to.equals(new Position(4, 7))).toBe(true);
+    expect(snap.arrows[1]!.from.equals(new Position(1, 7))).toBe(true);
+    expect(snap.arrows[1]!.to.equals(new Position(4, 7))).toBe(true);
+
+    // 关闭分析后箭头与评估行一并清除。
+    await controller.analyze();
+    const off = controller.getSnapshot();
+    expect(off.analysisActive).toBe(false);
+    expect(off.arrows).toHaveLength(0);
+    expect(off.evalLines).toHaveLength(0);
   });
 
   it('用户走子后引擎及时应手，无需切换模式（分析抢占门闸回归）', async () => {
