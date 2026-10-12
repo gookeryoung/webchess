@@ -43,4 +43,4 @@ clean: ## 清理构建产物与缓存
 	rm -rf packages/*/dist packages/web/dist node_modules/.vite
 
 push: ## 推送代码到所有远程仓库（带 --tags，任一失败立即中断；-u 使新分支首推可用）
-	@node -e "const{execSync}=require('child_process');for(const r of execSync('git remote',{encoding:'utf8'}).split(/\s+/).filter(Boolean)){console.log('推送 '+r+'...');execSync('git push -u '+r+' HEAD',{stdio:'inherit'});execSync('git push '+r+' --tags',{stdio:'inherit'})}"
+	@node -e "const{execSync}=require('child_process');for(const r of execSync('git remote',{encoding:'utf8'}).split(/\s+/).filter(Boolean)){console.log('Pushing to '+r+'...');execSync('git push -u '+r+' HEAD',{stdio:'inherit'});execSync('git push '+r+' --tags',{stdio:'inherit'})}"
