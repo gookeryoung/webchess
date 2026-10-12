@@ -19,14 +19,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 必须先装 pnpm：setup-node 的 cache: pnpm 依赖 pnpm 可执行文件计算缓存路径。
+      - name: Enable pnpm
+        run: corepack enable
+
       - name: Setup Node ${{ matrix.node-version }}
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
-
-      - name: Enable pnpm
-        run: corepack enable
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -52,14 +53,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 必须先装 pnpm：setup-node 的 cache: pnpm 依赖 pnpm 可执行文件计算缓存路径。
+      - name: Enable pnpm
+        run: corepack enable
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
-
-      - name: Enable pnpm
-        run: corepack enable
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -76,14 +78,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 必须先装 pnpm：setup-node 的 cache: pnpm 依赖 pnpm 可执行文件计算缓存路径。
+      - name: Enable pnpm
+        run: corepack enable
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
-
-      - name: Enable pnpm
-        run: corepack enable
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
