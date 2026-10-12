@@ -1,10 +1,27 @@
 import { Board, Move, Piece } from '@webchess/core';
 
-/** evaluateFast 的最小局面契约（FastPosition 结构满足，便于独立构造）。 */
+/**
+ * evaluateFast 的最小局面契约（FastPosition 结构满足，便于独立构造）。
+ * 知识项所需计数与将位由调用方增量维护，评估自身不做全盘计数。
+ */
 interface EvalPosition {
   readonly cells: Uint8Array;
   baseScore: number;
   redToMove: boolean;
+  /** 双方将/帅所在格下标。 */
+  kingRed: number;
+  kingBlack: number;
+  /** 双方重子（马/车/炮）价值合计与士/象/马/炮数量。 */
+  heavyRed: number;
+  heavyBlack: number;
+  advisorRed: number;
+  advisorBlack: number;
+  bishopRed: number;
+  bishopBlack: number;
+  knightRed: number;
+  knightBlack: number;
+  cannonRed: number;
+  cannonBlack: number;
 }
 
 /**
@@ -15,7 +32,8 @@ interface EvalPosition {
  * 1. 每类棋子一张红方视角位置价值表（黑方按行镜像取负，自动对称）；
  * 2. 子力 + 表值合并为 PIECE_SCORE[15][90]，由 FastPosition 在 make/unmake
  *    中增量维护，叶子节点评估只需补充少量动态项；
- * 3. 动态项只保留单位成本低的「车/马机动性」，避免每叶全盘重扫。
+ * 3. 动态项：车/马机动性 + 中残局知识（阶段感知的马炮调整、王活跃、
+ *    缺士象惩罚、空头炮受制），全部在单遍扫描内同步计算。
  */
 
 /** 将死分值（搜索终局判定用，按层数衰减以鼓励更快的杀）。 */
@@ -207,12 +225,65 @@ function knightMobility(cells: Uint8Array, sq: number): number {
 }
 
 /**
- * 叶子节点静态评估：增量维护的子力 + 位置表分，加上车/马机动性动态项。
+ * 局面阶段：双方重子（车 920 / 马 420 / 炮 480）价值合计。
+ * 满编 = 双方各 2 车 2 马 2 炮 = 7280；合计越低越接近残局。
+ */
+const FULL_PHASE = 2 * (920 + 420 + 480) * 2;
+
+/** 缺士惩罚基准（对手有重子施压时才计）。 */
+const MISSING_ADVISOR = 24;
+/** 缺象惩罚基准。 */
+const MISSING_BISHOP = 20;
+/** 空头炮惩罚（对方炮与己方将同线且中间无子，随时构成炮架威胁）。 */
+const FACING_CANNON = 30;
+/** 残局马升值 / 炮贬值幅度（马无蹩腿限制更灵活，炮缺炮架威力锐减）。 */
+const ENDGAME_KNIGHT = 30;
+const ENDGAME_CANNON = 25;
+/** 残局王每前进一步（出宫助攻）的价值（需覆盖 PST 的出宫惩罚）。 */
+const ENDGAME_KING_STEP = 15;
+/** 对手重子价值达到该值时缺士象惩罚全额生效（不足时按比例缩放）。 */
+const THREAT_FULL = 1840;
+
+/**
+ * 判断 sq 格（将位）沿纵向是否被对方空头炮瞄准：
+ * 自将位向上/下扫描到的第一个子恰为对方炮（中间无炮架）。
+ */
+function isFacingCannon(cells: Uint8Array, kingSq: number, enemyCannon: number): boolean {
+  const kx = kingSq % 9;
+  const ky = (kingSq / 9) | 0;
+  for (let ty = ky - 1; ty >= 0; ty--) {
+    const piece = cells[ty * 9 + kx];
+    if (piece !== Piece.Empty) {
+      return piece === enemyCannon;
+    }
+  }
+
+  for (let ty = ky + 1; ty <= 9; ty++) {
+    const piece = cells[ty * 9 + kx];
+    if (piece !== Piece.Empty) {
+      return piece === enemyCannon;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * 叶子节点静态评估：增量维护的子力 + 位置表分，加上动态知识项。
  * 返回「当前走子方」视角分值（negamax 约定）。
+ *
+ * 动态项（红正黑负，天然对称）：
+ * - 车/马机动性（全盘扫描成本内同步计算）；
+ * - 阶段感知：残局马升值/炮贬值、王出宫助攻；
+ * - 防御知识：缺士/缺象惩罚（按对手重子威胁缩放）、空头炮受制惩罚。
+ *
+ * 知识项全部为整数运算（除法后取整），保证评估分恒为整数，
+ * 与置换表 Int32 存储及 aspiration 窗口比较严格一致。
  */
 export function evaluateFast(pos: EvalPosition): number {
   const cells = pos.cells;
   let score = pos.baseScore;
+
   for (let sq = 0; sq < 90; sq++) {
     const piece = cells[sq];
     if (piece === Piece.RedRook) {
@@ -226,6 +297,35 @@ export function evaluateFast(pos: EvalPosition): number {
     }
   }
 
+  // 残局程度分子：0 = 满编中局，FULL_PHASE = 子力枯竭残局。
+  const egNum = FULL_PHASE - pos.heavyRed - pos.heavyBlack;
+  // 残局马炮调整：马更灵活（升值），炮缺炮架（贬值）。
+  if (egNum > 0) {
+    score += (((pos.knightRed - pos.knightBlack) * ENDGAME_KNIGHT * egNum) / FULL_PHASE) | 0;
+    score -= (((pos.cannonRed - pos.cannonBlack) * ENDGAME_CANNON * egNum) / FULL_PHASE) | 0;
+    // 残局王活跃：出宫前移助攻（红方前进 = 行号减小，黑方相反）。
+    const kingStep = ((ENDGAME_KING_STEP * egNum) / FULL_PHASE) | 0;
+    score += kingStep * (9 - ((pos.kingRed / 9) | 0));
+    score -= kingStep * ((pos.kingBlack / 9) | 0);
+  }
+
+  // 空头炮：己方将位被对方炮沿纵线隔空瞄准（无炮架即受制，开中局同样成立）。
+  if (isFacingCannon(cells, pos.kingRed, Piece.BlackCannon)) {
+    score -= FACING_CANNON;
+  }
+  if (isFacingCannon(cells, pos.kingBlack, Piece.RedCannon)) {
+    score += FACING_CANNON;
+  }
+
+  // 缺士象：仅当对手仍有重子施压时计（残局无攻子时缺防御无害），
+  // 威胁不足一车价值时按比例缩放。
+  const redThreat = Math.min(pos.heavyBlack, THREAT_FULL);
+  const blackThreat = Math.min(pos.heavyRed, THREAT_FULL);
+  score -= (((2 - pos.advisorRed) * MISSING_ADVISOR * redThreat) / THREAT_FULL) | 0;
+  score -= (((2 - pos.bishopRed) * MISSING_BISHOP * redThreat) / THREAT_FULL) | 0;
+  score += (((2 - pos.advisorBlack) * MISSING_ADVISOR * blackThreat) / THREAT_FULL) | 0;
+  score += (((2 - pos.bishopBlack) * MISSING_BISHOP * blackThreat) / THREAT_FULL) | 0;
+
   return pos.redToMove ? score : -score;
 }
 
@@ -233,16 +333,76 @@ export function evaluateFast(pos: EvalPosition): number {
 export function evaluate(board: Board): number {
   const view = new Uint8Array(90);
   view.set(board.cells);
-  const pos: EvalPosition = { cells: view, baseScore: 0, redToMove: board.redToMove };
-  let base = 0;
+  const pos: EvalPosition = {
+    cells: view,
+    baseScore: 0,
+    redToMove: board.redToMove,
+    kingRed: -1,
+    kingBlack: -1,
+    heavyRed: 0,
+    heavyBlack: 0,
+    advisorRed: 0,
+    advisorBlack: 0,
+    bishopRed: 0,
+    bishopBlack: 0,
+    knightRed: 0,
+    knightBlack: 0,
+    cannonRed: 0,
+    cannonBlack: 0,
+  };
   for (let sq = 0; sq < 90; sq++) {
     const piece = view[sq];
-    if (piece !== Piece.Empty) {
-      base += PIECE_SCORE[piece * 90 + sq];
+    if (piece === Piece.Empty) {
+      continue;
+    }
+
+    pos.baseScore += PIECE_SCORE[piece * 90 + sq];
+    switch (piece) {
+      case Piece.RedKing:
+        pos.kingRed = sq;
+        break;
+      case Piece.BlackKing:
+        pos.kingBlack = sq;
+        break;
+      case Piece.RedKnight:
+        pos.knightRed++;
+        pos.heavyRed += PIECE_VALUE[piece];
+        break;
+      case Piece.BlackKnight:
+        pos.knightBlack++;
+        pos.heavyBlack += PIECE_VALUE[piece];
+        break;
+      case Piece.RedRook:
+        pos.heavyRed += PIECE_VALUE[piece];
+        break;
+      case Piece.BlackRook:
+        pos.heavyBlack += PIECE_VALUE[piece];
+        break;
+      case Piece.RedCannon:
+        pos.cannonRed++;
+        pos.heavyRed += PIECE_VALUE[piece];
+        break;
+      case Piece.BlackCannon:
+        pos.cannonBlack++;
+        pos.heavyBlack += PIECE_VALUE[piece];
+        break;
+      case Piece.RedAdvisor:
+        pos.advisorRed++;
+        break;
+      case Piece.BlackAdvisor:
+        pos.advisorBlack++;
+        break;
+      case Piece.RedBishop:
+        pos.bishopRed++;
+        break;
+      case Piece.BlackBishop:
+        pos.bishopBlack++;
+        break;
+      default:
+        break;
     }
   }
 
-  pos.baseScore = base;
   return evaluateFast(pos);
 }
 

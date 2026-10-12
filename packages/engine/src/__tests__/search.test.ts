@@ -158,6 +158,18 @@ describe('Searcher — 棋力强化回归', () => {
     expect(outcome.score).toBeLessThanOrEqual(-MATE_SCORE + 1);
   });
 
+  it('SEE 剪枝回归：亏交换吃子不被误选，正收益吃子不丢', () => {
+    // 红车 h8 可吃无根黑车 h4（SEE +920）；红马 d6 可吃有根黑卒 e4
+    // （黑马 c3 护卒，马腿 b3/d3 空，SEE ≈ -320）。
+    const fen = '4k4/9/9/9/4p2r1/2n6/3N5/9/7R1/4K4 w - - 0 1';
+    const board = Board.fromFen(fen);
+    const outcome = new Searcher().search(board, { maxDepth: 4, moveTimeMs: 5000 });
+    // 正收益吃子必须被选中（UCCI 纵线为 9-y 映射：h8→h4 即 h1h5），
+    // 亏交换吃子不得成为最佳着法。
+    expect(outcome.bestMove!.toUcci()).toBe('h1h5');
+    expect(outcome.score).toBeGreaterThan(400);
+  });
+
   it('性能下限：起始局面 1000ms 内达到 6 层以上（旧实现仅 4-5 层）', () => {
     const outcome = new Searcher().search(new Board(), { maxDepth: 12, moveTimeMs: 1000 });
     expect(outcome.stats.depth).toBeGreaterThanOrEqual(6);

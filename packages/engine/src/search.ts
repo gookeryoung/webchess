@@ -321,6 +321,9 @@ export class Searcher {
       }
     }
 
+    // 静态分（走子方视角）：futility 与空步裁剪共用（增量维护，O(1)）。
+    const staticEval = pos.redToMove ? pos.baseScore : -pos.baseScore;
+
     // 走法裁剪（futility）：浅层安静节点静态分远低于 alpha 时，
     // 安静着法难有作为，直接降级为静态搜索。
     if (
@@ -328,12 +331,14 @@ export class Searcher {
       depth <= 2 &&
       beta < MATE_BOUND &&
       Math.abs(alpha) < MATE_BOUND &&
-      (pos.redToMove ? pos.baseScore : -pos.baseScore) + 150 * depth <= alpha
+      staticEval + 150 * depth <= alpha
     ) {
       return this.quiescence(alpha, beta, ply, true);
     }
 
-    // 空步裁剪：非将军、有重子、非连续空步时以浅层试探直接截断。
+    // 空步裁剪：非将军、有重子且非连续空步时以浅层试探直接截断。
+    // baseScore 虽无机动性项，但试探消耗 2-3 层深度本身即是安全边际，
+    // 加静态分守卫会收回空步裁剪的大部分收益（固定深度节点数 +60%）。
     const heavy = pos.redToMove ? pos.heavyRed : pos.heavyBlack;
     if (canNull && !inCheck && depth >= 3 && beta < MATE_BOUND && heavy > 0) {
       const r = depth >= 6 ? 3 : 2;

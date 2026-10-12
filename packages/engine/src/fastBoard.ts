@@ -106,9 +106,18 @@ export class FastPosition {
   /** 双方将/帅所在格下标（-1 表示缺失）。 */
   kingRed = -1;
   kingBlack = -1;
-  /** 双方重子（马/车/炮）数量，空步裁剪的守卫条件。 */
+  /** 双方重子（马/车/炮）价值合计，空步裁剪守卫与残局阶段感知共用。 */
   heavyRed = 0;
   heavyBlack = 0;
+  /** 双方士/象/马/炮数量（中残局知识项的 O(1) 增量状态）。 */
+  advisorRed = 0;
+  advisorBlack = 0;
+  bishopRed = 0;
+  bishopBlack = 0;
+  knightRed = 0;
+  knightBlack = 0;
+  cannonRed = 0;
+  cannonBlack = 0;
   /** 已走半着数（栈深度）。 */
   ply = 0;
 
@@ -140,6 +149,14 @@ export class FastPosition {
     this.kingBlack = -1;
     this.heavyRed = 0;
     this.heavyBlack = 0;
+    this.advisorRed = 0;
+    this.advisorBlack = 0;
+    this.bishopRed = 0;
+    this.bishopBlack = 0;
+    this.knightRed = 0;
+    this.knightBlack = 0;
+    this.cannonRed = 0;
+    this.cannonBlack = 0;
     this.ply = 0;
     this.pieceCount = 0;
     this.slotOf.fill(-1);
@@ -154,14 +171,49 @@ export class FastPosition {
       this.keyLo ^= ZOB_LO[idx];
       this.keyHi ^= ZOB_HI[idx];
       this.baseScore += PIECE_SCORE[idx];
-      if (piece === Piece.RedKing) {
-        this.kingRed = sq;
-      } else if (piece === Piece.BlackKing) {
-        this.kingBlack = sq;
-      } else if (piece >= Piece.RedKnight && piece <= Piece.RedCannon) {
-        this.heavyRed++;
-      } else if (piece >= Piece.BlackKnight && piece <= Piece.BlackCannon) {
-        this.heavyBlack++;
+      switch (piece) {
+        case Piece.RedKing:
+          this.kingRed = sq;
+          break;
+        case Piece.BlackKing:
+          this.kingBlack = sq;
+          break;
+        case Piece.RedKnight:
+          this.knightRed++;
+          this.heavyRed += PIECE_VALUE[piece];
+          break;
+        case Piece.BlackKnight:
+          this.knightBlack++;
+          this.heavyBlack += PIECE_VALUE[piece];
+          break;
+        case Piece.RedRook:
+          this.heavyRed += PIECE_VALUE[piece];
+          break;
+        case Piece.BlackRook:
+          this.heavyBlack += PIECE_VALUE[piece];
+          break;
+        case Piece.RedCannon:
+          this.cannonRed++;
+          this.heavyRed += PIECE_VALUE[piece];
+          break;
+        case Piece.BlackCannon:
+          this.cannonBlack++;
+          this.heavyBlack += PIECE_VALUE[piece];
+          break;
+        case Piece.RedAdvisor:
+          this.advisorRed++;
+          break;
+        case Piece.BlackAdvisor:
+          this.advisorBlack++;
+          break;
+        case Piece.RedBishop:
+          this.bishopRed++;
+          break;
+        case Piece.BlackBishop:
+          this.bishopBlack++;
+          break;
+        default:
+          break;
       }
 
       const slot = this.pieceCount++;
@@ -205,9 +257,27 @@ export class FastPosition {
       this.keyHi ^= ZOB_HI[c + to];
       this.baseScore -= PIECE_SCORE[c + to];
       if (captured >= Piece.RedKnight && captured <= Piece.RedCannon) {
-        this.heavyRed--;
+        this.heavyRed -= PIECE_VALUE[captured];
+        if (captured === Piece.RedKnight) {
+          this.knightRed--;
+        } else if (captured === Piece.RedCannon) {
+          this.cannonRed--;
+        }
       } else if (captured >= Piece.BlackKnight && captured <= Piece.BlackCannon) {
-        this.heavyBlack--;
+        this.heavyBlack -= PIECE_VALUE[captured];
+        if (captured === Piece.BlackKnight) {
+          this.knightBlack--;
+        } else if (captured === Piece.BlackCannon) {
+          this.cannonBlack--;
+        }
+      } else if (captured === Piece.RedAdvisor) {
+        this.advisorRed--;
+      } else if (captured === Piece.BlackAdvisor) {
+        this.advisorBlack--;
+      } else if (captured === Piece.RedBishop) {
+        this.bishopRed--;
+      } else if (captured === Piece.BlackBishop) {
+        this.bishopBlack--;
       }
 
       // 尾交换删除被吃子。
@@ -280,9 +350,27 @@ export class FastPosition {
       this.keyHi ^= ZOB_HI[c + to];
       this.baseScore += PIECE_SCORE[c + to];
       if (captured >= Piece.RedKnight && captured <= Piece.RedCannon) {
-        this.heavyRed++;
+        this.heavyRed += PIECE_VALUE[captured];
+        if (captured === Piece.RedKnight) {
+          this.knightRed++;
+        } else if (captured === Piece.RedCannon) {
+          this.cannonRed++;
+        }
       } else if (captured >= Piece.BlackKnight && captured <= Piece.BlackCannon) {
-        this.heavyBlack++;
+        this.heavyBlack += PIECE_VALUE[captured];
+        if (captured === Piece.BlackKnight) {
+          this.knightBlack++;
+        } else if (captured === Piece.BlackCannon) {
+          this.cannonBlack++;
+        }
+      } else if (captured === Piece.RedAdvisor) {
+        this.advisorRed++;
+      } else if (captured === Piece.BlackAdvisor) {
+        this.advisorBlack++;
+      } else if (captured === Piece.RedBishop) {
+        this.bishopRed++;
+      } else if (captured === Piece.BlackBishop) {
+        this.bishopBlack++;
       }
     }
 

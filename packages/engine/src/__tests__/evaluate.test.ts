@@ -79,6 +79,75 @@ describe('evaluate — 静态评估', () => {
   });
 });
 
+describe('evaluate — 中残局知识', () => {
+  it('对手有重子施压时，缺士方应受惩罚（失分超过士的子力价值）', () => {
+    const make = (withAdvisors: boolean) => {
+      const cells = new Uint8Array(90);
+      cells.fill(Piece.Empty);
+      cells[cellIndex(4, 0)] = Piece.BlackKing;
+      cells[cellIndex(4, 9)] = Piece.RedKing;
+      cells[cellIndex(4, 5)] = Piece.RedRook;
+      if (withAdvisors) {
+        cells[cellIndex(3, 0)] = Piece.BlackAdvisor;
+        cells[cellIndex(5, 0)] = Piece.BlackAdvisor;
+      }
+      return new Board(cells, true, 1);
+    };
+
+    // 黑士子力 + 位置分 = 2 × (220 + 8) = 456；缺士惩罚 = 2 × 24 × 0.5（威胁缩放）= 24。
+    const withAdv = evaluate(make(true));
+    const noAdv = evaluate(make(false));
+    expect(noAdv - withAdv).toBeGreaterThan(470);
+  });
+
+  it('空头炮受制：黑炮与红帅同线无遮拦时应被惩罚', () => {
+    const make = (cannonX: number) => {
+      const cells = new Uint8Array(90);
+      cells.fill(Piece.Empty);
+      cells[cellIndex(4, 0)] = Piece.BlackKing;
+      cells[cellIndex(4, 9)] = Piece.RedKing;
+      cells[cellIndex(cannonX, 1)] = Piece.BlackCannon;
+      return new Board(cells, true, 1);
+    };
+
+    // e1 炮正对 e9 红帅（-30）；d1 炮偏离将线。PST 差异仅 2 分。
+    const faced = evaluate(make(4));
+    const safe = evaluate(make(3));
+    expect(faced).toBeLessThan(safe);
+  });
+
+  it('残局中马的价值应高于炮（马升值 / 炮贬值）', () => {
+    const make = (piece: number) => {
+      const cells = new Uint8Array(90);
+      cells.fill(Piece.Empty);
+      cells[cellIndex(4, 0)] = Piece.BlackKing;
+      cells[cellIndex(4, 9)] = Piece.RedKing;
+      cells[cellIndex(3, 5)] = piece;
+      return new Board(cells, true, 1);
+    };
+
+    // 子力差（炮 480 > 马 420）在满编时炮更值钱；残局阶段调整后马反超。
+    // 取 x=3 避开将线（x=4），排除空头炮奖励对炮方的干扰。
+    expect(evaluate(make(Piece.RedKnight))).toBeGreaterThan(
+      evaluate(make(Piece.RedCannon)),
+    );
+  });
+
+  it('残局王出宫前移应获得活跃度奖励', () => {
+    const make = (kingY: number) => {
+      const cells = new Uint8Array(90);
+      cells.fill(Piece.Empty);
+      cells[cellIndex(4, 0)] = Piece.BlackKing;
+      cells[cellIndex(0, 0)] = Piece.BlackRook;
+      cells[cellIndex(4, kingY)] = Piece.RedKing;
+      return new Board(cells, true, 1);
+    };
+
+    // 出宫两步（y=7）活跃奖励 2×15×eg≈26，需覆盖 PST 的出宫惩罚（-18）。
+    expect(evaluate(make(7))).toBeGreaterThan(evaluate(make(9)));
+  });
+});
+
 describe('captureScore — MVV-LVA 启发式', () => {
   it('红车吃黑卒应返回正分（卒×10 - 车）', () => {
     const cells = new Uint8Array(90);
