@@ -11,7 +11,8 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
-    "./wasm/engine-core.wasm": "./wasm/engine-core.wasm"
+    "./wasm/engine-core.wasm": "./wasm/engine-core.wasm",
+    "./wasm/nnue-weights.bin": "./wasm/nnue-weights.bin"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json --noEmit",

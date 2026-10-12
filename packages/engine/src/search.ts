@@ -1,6 +1,7 @@
 import { Board, Move, Position } from '@webchess/core';
 import { FastPosition, MAX_PLY, moveFrom, moveTo } from './fastBoard.js';
 import { MATE_SCORE, PIECE_VALUE } from './evaluate.js';
+import { nnueReady } from './nnue.js';
 import { acquireWasmPosition } from './wasmCore.js';
 
 /**
@@ -82,6 +83,11 @@ export interface SearcherOptions {
    * 显式 false 强制纯 TS（A/B 基线与降级测试用）。
    */
   wasm?: boolean;
+  /**
+   * NNUE 评估：默认 true（权重已加载时启用，此时评估质量优先，改用纯 TS 后端）；
+   * 显式 false 回退手工评估（可配合 WASM 后端，A/B 基线用）。
+   */
+  nnue?: boolean;
 }
 
 /** 搜索统计（供 UI 显示与测试断言）。 */
@@ -152,9 +158,13 @@ export class Searcher {
 
   constructor(options?: SearcherOptions) {
     Object.assign(this.opt, options);
-    // 后端定型：核心已加载且未显式禁用时用 WASM 实例，否则纯 TS。
-    this.pos =
-      (options?.wasm === false ? null : acquireWasmPosition()) ?? new FastPosition();
+    // 后端定型：NNUE 权重已加载且未禁用时评估质量优先，强制纯 TS 后端
+    // （NNUE 增量 accumulator 仅在 FastPosition 上维护）；
+    // 否则按 WASM 可用性选择，纯 TS 兜底。
+    const useNnue = options?.nnue !== false && nnueReady();
+    this.pos = useNnue
+      ? new FastPosition()
+      : ((options?.wasm === false ? null : acquireWasmPosition()) ?? new FastPosition());
     this.moveBuf = this.pos.moveBuffer;
     this.rootMoves = this.pos.moveBuffer.subarray(0, MOVES_PER_PLY);
   }

@@ -1,0 +1,14 @@
+[project]
+name = "webchess-nnue-trainer"
+version = "0.1.0"
+description = "webchess NNUE 训练器（仅开发期使用，运行时零依赖）"
+requires-python = ">=3.12,<3.13"
+dependencies = ["numpy>=2.0", "torch==2.6.0"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

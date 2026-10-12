@@ -1,5 +1,6 @@
 import { Board, Piece } from '@webchess/core';
 import { PIECE_SCORE, PIECE_VALUE, evaluateFast } from './evaluate.js';
+import { NnueAccumulator, nnueReady } from './nnue.js';
 
 /**
  * 搜索专用快速局面（引擎内部实现，不对外暴露）。
@@ -95,6 +96,15 @@ export function moveTo(move: number): number {
   return (move >>> 7) & 127;
 }
 
+/** FastPosition 构造选项。 */
+export interface FastPositionOptions {
+  /**
+   * NNUE 评估：默认 true（权重已加载时启用增量 accumulator 并替换 evaluateFull）；
+   * 显式 false 强制手工评估（A/B 基线与降级测试用）。
+   */
+  nnue?: boolean;
+}
+
 /** 搜索专用快速局面。实例可复用：`setFromBoard` 重置后即可再次搜索。 */
 export class FastPosition {
   /** 棋子矩阵（与内核 Board 同构：index = y * 9 + x）。 */
@@ -123,6 +133,13 @@ export class FastPosition {
   cannonBlack = 0;
   /** 已走半着数（栈深度）。 */
   ply = 0;
+
+  /** NNUE 增量 accumulator（构造时定型；null = 手工评估路径）。 */
+  private readonly nnueAcc: NnueAccumulator | null;
+
+  constructor(options?: FastPositionOptions) {
+    this.nnueAcc = options?.nnue === false || !nnueReady() ? null : new NnueAccumulator();
+  }
 
   /**
    * 每层走法缓冲（Searcher 经此缓冲传入 genMoves；WASM 后端为线性内存视图，
@@ -238,6 +255,7 @@ export class FastPosition {
     this.keyLoStack[0] = this.keyLo;
     this.keyHiStack[0] = this.keyHi;
     this.nullStack[0] = 0;
+    this.nnueAcc?.refresh(cells);
     return this;
   }
 
@@ -255,6 +273,7 @@ export class FastPosition {
 
     this.undoMove[this.ply] = move;
     this.undoCap[this.ply] = captured;
+    this.nnueAcc?.pushMove(piece, from, to, captured, this.ply);
 
     this.keyLo ^= ZOB_LO[p + from] ^ ZOB_LO[p + to];
     this.keyHi ^= ZOB_HI[p + from] ^ ZOB_HI[p + to];
@@ -324,6 +343,7 @@ export class FastPosition {
   /** 回退一步 `make`（XOR 与加减均自逆，按栈记录还原）。 */
   unmake(): void {
     this.ply--;
+    this.nnueAcc?.popMove(this.ply);
     const move = this.undoMove[this.ply];
     const captured = this.undoCap[this.ply];
     const from = move & 127;
@@ -835,8 +855,12 @@ export class FastPosition {
     return false;
   }
 
-  /** 叶子节点静态评估（走子方视角）；WASM 后端覆写为调用 wasm evaluate。 */
+  /** 叶子节点静态评估（走子方视角）；NNUE 权重加载后由增量网络替换，否则手工评估。 */
   evaluateFull(): number {
+    if (this.nnueAcc !== null) {
+      return this.nnueAcc.evaluate(this.redToMove);
+    }
+
     return evaluateFast(this);
   }
 
