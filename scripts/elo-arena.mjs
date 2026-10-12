@@ -24,9 +24,15 @@ function parseArgs(argv) {
     depthB: 6,
     timeA: 300,
     timeB: 300,
+    legacy: false,
   };
   for (let i = 2; i < argv.length; i++) {
     const key = argv[i];
+    if (key === '--legacy') {
+      args.legacy = true;
+      continue;
+    }
+
     const value = Number(argv[++i]);
     if (!Number.isFinite(value)) {
       throw new Error(`参数 ${key} 缺少合法数值`);
@@ -128,11 +134,15 @@ function playGame(searcherA, searcherB, paramsA, paramsB, aIsRed) {
 const args = parseArgs(process.argv);
 const paramsA = { maxDepth: args.depthA, moveTimeMs: args.timeA };
 const paramsB = { maxDepth: args.depthB, moveTimeMs: args.timeB };
-const searcherA = new Searcher();
+// --legacy：A 方关闭全部新搜索特性作为基线，B 方保持全开（测量新特性 Elo 增益）。
+const legacyOptions = args.legacy
+  ? { singularExtension: false, countermove: false, captureHistory: false, mateDistance: false }
+  : undefined;
+const searcherA = new Searcher(legacyOptions);
 const searcherB = new Searcher();
 
 console.log(
-  `--- 自对弈竞技场：A(depth=${args.depthA}, ${args.timeA}ms) vs B(depth=${args.depthB}, ${args.timeB}ms)，共 ${args.games} 局 ---`,
+  `--- 自对弈竞技场：A(depth=${args.depthA}, ${args.timeA}ms) vs B(depth=${args.depthB}, ${args.timeB}ms)，共 ${args.games} 局${args.legacy ? '（legacy 特性）' : ''} ---`,
 );
 
 let aWins = 0;
@@ -173,7 +183,7 @@ const elo = scoreA <= 0 ? -9999 : scoreA >= 1 ? 9999 : -400 * Math.log10(1 / sco
 
 console.log('--- 汇总 ---');
 console.log(`A ${aWins} 胜 / 和 ${draws} / ${bWins} 胜 B（A 得分率 ${(scoreA * 100).toFixed(1)}%）`);
-console.log(`ELO 差（B-A）：${elo >= 0 ? '+' : ''}${elo.toFixed(0)}`);
+console.log(`ELO 差（A-B）：${elo >= 0 ? '+' : ''}${elo.toFixed(0)}`);
 console.log(
   `平均深度 A ${aDepthTotal / games} vs B ${bDepthTotal / games}；` +
     `平均 ${totalHalfmoves / games} 半着/局；终局：` +

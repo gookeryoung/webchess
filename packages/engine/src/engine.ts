@@ -10,27 +10,42 @@ import {
   Rule,
   SearchResult,
 } from '@webchess/core';
+import { probeBook } from './book.js';
 import { Searcher } from './search.js';
 
 /**
  * 内置中国象棋引擎（实现内核的 EngineSession 契约）。
  *
  * 替代原 C# 的 Pikafish + UCI 进程方案（Web / 小程序无法启动子进程、无法加载 NNUE）。
- * 强度通过 ELO / Skill Level 到搜索深度上限的映射调节；映射结果作为
- * 「深度上限」参与 go 参数合成，保证显式 depth 请求与强度限制同时生效。
+ * 强度通过 ELO / Skill Level 到搜索深度上限的映射调节；最高档不再压深度
+ * （时间制自然加深）；弱化档在浅深度之上叠加概率性失误采样，模拟人类失误。
  */
 
-/** 由棋力选项推导搜索深度上限；未配置棋力选项时返回 undefined（不限制）。 */
+/** ELO 最高档：不再限制深度，由时限自然决定。 */
+const ELO_UNLIMITED = 3100;
+
+/**
+ * 由棋力选项推导搜索深度上限；最高档/未配置时返回 undefined（不限制）。
+ * 映射保持低端不变：ELO 1500 → 3，Skill 0 → 1。
+ */
 export function depthFromOptions(options: EngineOptions | undefined): number | undefined {
   if (options?.elo !== undefined && options.limitStrength === true) {
-    // UCI_Elo 1280-3199 → 深度 2-10（新 PVS 引擎在 1000ms 内可稳定达到）。
-    const depth = Math.round(((options.elo - 1280) / (3199 - 1280)) * 8) + 2;
-    return Math.min(10, Math.max(2, depth));
+    if (options.elo >= ELO_UNLIMITED) {
+      return undefined;
+    }
+
+    // UCI_Elo 1280-3100 → 深度 2-12。
+    const depth = Math.round(((options.elo - 1280) / (ELO_UNLIMITED - 1280)) * 10) + 2;
+    return Math.min(12, Math.max(2, depth));
   }
 
   if (options?.skillLevel !== undefined) {
-    // Skill Level 0-20 → 深度 1-10。
-    return Math.min(10, Math.max(1, Math.round((options.skillLevel / 20) * 9) + 1));
+    if (options.skillLevel >= 20) {
+      return undefined;
+    }
+
+    // Skill Level 0-19 → 深度 1-13。
+    return Math.min(13, Math.max(1, Math.round((options.skillLevel / 19) * 12) + 1));
   }
 
   return undefined;
@@ -40,6 +55,19 @@ export function depthFromOptions(options: EngineOptions | undefined): number | u
 const MULTIPV_TIME_MIN = 150;
 const MULTIPV_TIME_MAX = 800;
 
+/** 起始局面 FEN（开局库仅从此局面出发的对局中介入）。 */
+const START_FEN = new Board().toFen();
+
+/** 失误采样：弱化档位以该概率放弃最佳着、随机走合法着（模拟人类失误）。 */
+function blunderRate(strengthDepth: number | undefined): number {
+  if (strengthDepth === undefined || strengthDepth >= 6) {
+    return 0;
+  }
+
+  // 深度上限 2 → 0.48，5 → 0.12，6 以上 → 0。
+  return Math.min(0.5, (6 - strengthDepth) * 0.12);
+}
+
 export class BuiltinEngine implements EngineSession {
   private readonly searcher = new Searcher();
   private readonly infoEmitter = new Emitter<MultiPvInfo>();
@@ -48,12 +76,15 @@ export class BuiltinEngine implements EngineSession {
   /** 由 applyOptions 下发的强度深度上限（undefined 表示未限制）。 */
   private strengthDepth: number | undefined;
   private stopRequested = false;
+  /** 失误采样随机源（测试可注入确定性实现）。 */
+  private readonly rng: () => number;
 
   isReady = true;
 
-  constructor(defaultDepth = 10, defaultTimeMs = 1500) {
+  constructor(defaultDepth = 10, defaultTimeMs = 1500, rng: () => number = Math.random) {
     this.defaultDepth = defaultDepth;
     this.defaultTimeMs = defaultTimeMs;
+    this.rng = rng;
   }
 
   onInfo(listener: (info: MultiPvInfo) => void): () => void {
@@ -96,6 +127,31 @@ export class BuiltinEngine implements EngineSession {
     const multiPv = params.multiPv ?? 1;
     const cancelled = () => this.stopRequested || token?.cancelled === true;
 
+    // 开局库：仅在时间制人机对局（无显式 depth、非分析模式）且起始局面下介入，
+    // 命中则零延迟出库，开局阶段不浪费搜索算力。
+    if (
+      params.depth === undefined &&
+      params.infinite !== true &&
+      multiPv <= 1 &&
+      params.moves !== undefined &&
+      params.moves.length > 0 &&
+      params.fen === START_FEN
+    ) {
+      const bookMove = probeBook(params.moves, this.rng);
+      if (bookMove !== null && this.isLegalUcci(board, bookMove)) {
+        this.infoEmitter.emit({
+          index: 1,
+          depth: 0,
+          scoreCp: 0,
+          isMate: false,
+          upperBound: false,
+          lowerBound: false,
+          pv: [bookMove],
+        });
+        return { bestMove: bookMove, ponderMove: null };
+      }
+    }
+
     if (multiPv > 1) {
       return this.searchMultiPv(board, depth, multiPv, moveTimeMs, cancelled);
     }
@@ -107,7 +163,7 @@ export class BuiltinEngine implements EngineSession {
       onDepth: (reachedDepth, score, pv) => {
         this.infoEmitter.emit({
           index: 1,
-          depth: reachedDepth,
+          depth: Math.min(reachedDepth, depth),
           scoreCp: Math.round(score),
           isMate: Math.abs(score) > 90000,
           upperBound: false,
@@ -121,10 +177,32 @@ export class BuiltinEngine implements EngineSession {
       return { bestMove: null, ponderMove: null };
     }
 
+    let bestUcci = outcome.bestMove?.toUcci() ?? null;
+
+    // 弱化档失误采样：以 blunderRate 概率随机走一步合法着（棋感类失误，
+    // 比单纯压深度的「变笨」更接近真人对手）。
+    const blunder = blunderRate(this.strengthDepth);
+    if (bestUcci !== null && blunder > 0 && this.rng() < blunder) {
+      const legal = Rule.getAllLegalMoves(board, board.redToMove);
+      if (legal.length > 1) {
+        bestUcci = legal[Math.floor(this.rng() * legal.length)].toUcci();
+      }
+    }
+
     return {
-      bestMove: outcome.bestMove?.toUcci() ?? null,
+      bestMove: bestUcci,
       ponderMove: outcome.pv[1]?.toUcci() ?? null,
     };
+  }
+
+  /** 校验 UCCI 着法在当前 board（已应用 params.moves 后）是否合法。 */
+  private isLegalUcci(board: Board, ucci: string): boolean {
+    try {
+      const move = Move.fromUcci(ucci);
+      return move !== null && Rule.isLegalMove(board, move);
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -180,7 +258,7 @@ export class BuiltinEngine implements EngineSession {
 
       this.infoEmitter.emit({
         index: index++,
-        depth: outcome.stats.depth + 1,
+        depth: Math.min(outcome.stats.depth + 1, depth),
         scoreCp: Math.round(score),
         isMate: Math.abs(score) > 90000,
         upperBound: false,

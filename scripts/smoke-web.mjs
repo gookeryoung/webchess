@@ -93,6 +93,9 @@ if (workerChunk === undefined) {
   );
 }
 
-server.close();
-console.log(failed === 0 ? '\n[smoke-web] 全部通过' : `\n[smoke-web] ${failed} 项失败`);
-process.exit(failed === 0 ? 0 : 1);
+// 在服务器句柄完全关闭后退出：Windows + 新版 node 下先 exit 再关句柄
+// 会触发 libuv win/async.c 的 UV_HANDLE_CLOSING 断言导致进程崩溃。
+server.close(() => {
+  console.log(failed === 0 ? '\n[smoke-web] 全部通过' : `\n[smoke-web] ${failed} 项失败`);
+  process.exit(failed === 0 ? 0 : 1);
+});

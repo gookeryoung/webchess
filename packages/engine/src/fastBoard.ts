@@ -404,6 +404,15 @@ export class FastPosition {
     this.keyHi ^= ZOB_SIDE_HI;
   }
 
+  /** 上一步实走着法编码（根节点或上一步为空步时返回 0；countermove 启发用）。 */
+  lastMove(): number {
+    if (this.ply === 0 || this.nullStack[this.ply] === 1) {
+      return 0;
+    }
+
+    return this.undoMove[this.ply - 1];
+  }
+
   /**
    * 生成走子方全部伪合法着法（含蹩马腿/塞象眼/九宫/半场/过河兵限制，
    * 不含「走后被将军」过滤；将帅照面由走后的 inCheck 判定拦截）。

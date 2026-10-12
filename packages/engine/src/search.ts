@@ -30,11 +30,26 @@ const MATE_BOUND = MATE_SCORE - MAX_PLY;
 /** 每层走法缓冲容量（单节点着法数上限约 200，留余量）。 */
 const MOVES_PER_PLY = 256;
 
-/** 着法打分档位（保证 TT > 吃子 > 杀手 > 历史）。 */
+/** 着法打分档位（保证 TT > 吃子 > 杀手 > 反制 > 历史）。 */
 const SCORE_TT = 1 << 28;
 const SCORE_CAPTURE = 1 << 26;
 const SCORE_KILLER1 = 1 << 25;
 const SCORE_KILLER2 = SCORE_KILLER1 - 1;
+const SCORE_COUNTER = SCORE_KILLER2 - 1;
+
+/**
+ * 搜索特性开关（默认全开；elo-arena 用旧特性子集做 A/B 强度测量）。
+ */
+export interface SearcherOptions {
+  /** 奇异延伸：TT 主着法显著优于其余着法时延伸一层。 */
+  singularExtension?: boolean;
+  /** countermove 反制着法表（安静着法排序，位于杀手之后历史之前）。 */
+  countermove?: boolean;
+  /** 吃子历史表（在吃子档位内细调排序）。 */
+  captureHistory?: boolean;
+  /** mate distance pruning（将死距离裁剪）。 */
+  mateDistance?: boolean;
+}
 
 /** 搜索统计（供 UI 显示与测试断言）。 */
 export interface SearchStats {
@@ -87,6 +102,22 @@ export class Searcher {
   private readonly scoreBuf = new Int32Array(MAX_PLY * MOVES_PER_PLY);
   private readonly killers = new Int32Array(MAX_PLY * 2);
   private readonly history = new Int32Array(15 * 90);
+  /** countermove 表：[上一着棋子 * 90 + 上一着终点] → 反制着法。 */
+  private readonly counterMoves = new Int32Array(15 * 90);
+  /** 吃子历史：[吃方子 * 90 + 终点] → 累计增益（>> 8 后参与吃子排序）。 */
+  private readonly capHistory = new Int32Array(15 * 90);
+
+  /** 特性开关（构造时定型，运行期不变）。 */
+  private readonly opt = {
+    singularExtension: true,
+    countermove: true,
+    captureHistory: true,
+    mateDistance: true,
+  };
+
+  constructor(options?: SearcherOptions) {
+    Object.assign(this.opt, options);
+  }
 
   private readonly rootMoves = new Int32Array(MOVES_PER_PLY);
   private readonly rootScores = new Int32Array(MOVES_PER_PLY);
@@ -106,6 +137,8 @@ export class Searcher {
     this.cancelled = params.cancelled ?? (() => false);
     this.killers.fill(0);
     this.history.fill(0);
+    this.counterMoves.fill(0);
+    this.capHistory.fill(0);
     const start = now();
     this.deadline = start + moveTimeMs;
 
@@ -265,8 +298,15 @@ export class Searcher {
     };
   }
 
-  /** PVS 主搜索：将军延伸 + 置换表 + 空步裁剪 + LMR。 */
-  private searchNode(depth: number, alpha: number, beta: number, ply: number, canNull: boolean): number {
+  /** PVS 主搜索：将军延伸 + 置换表 + 空步裁剪 + LMR + 奇异延伸 + MDP。 */
+  private searchNode(
+    depth: number,
+    alpha: number,
+    beta: number,
+    ply: number,
+    canNull: boolean,
+    excludedMove = 0,
+  ): number {
     if (this.aborted) {
       return 0;
     }
@@ -292,32 +332,46 @@ export class Searcher {
       depth++;
     }
 
+    // mate distance pruning：当前路径上不可能出现比「立即被将死」更差、
+    // 也不可能比「下一着将死对手」更好的分值，据此收紧窗口，提前截断。
+    if (this.opt.mateDistance) {
+      alpha = Math.max(alpha, -MATE_SCORE + ply);
+      beta = Math.min(beta, MATE_SCORE - ply);
+      if (alpha >= beta) {
+        return alpha;
+      }
+    }
+
     if (depth <= 0 || ply >= MAX_PLY - 8) {
       return this.quiescence(alpha, beta, ply, true);
     }
 
-    // 置换表探测。
+    // 置换表探测（命中即取着法/深度/标志/分值；分值按当前 ply 平移还原）。
     const idx = this.ttIndex();
     let ttMove = 0;
+    let ttDepth = -1;
+    let ttFlag = -1;
+    let ttValue = 0;
     if (this.ttKeyA[idx] === pos.keyLo && this.ttKeyB[idx] === pos.keyHi) {
       ttMove = this.ttMoveArr[idx];
       const meta = this.ttMeta[idx];
-      if ((meta & 0xff) >= depth) {
-        let score = this.ttScoreArr[idx];
-        if (score > MATE_BOUND) {
-          score -= ply;
-        } else if (score < -MATE_BOUND) {
-          score += ply;
-        }
+      ttDepth = meta & 0xff;
+      ttFlag = meta >> 8;
+      ttValue = this.ttScoreArr[idx];
+      if (ttValue > MATE_BOUND) {
+        ttValue -= ply;
+      } else if (ttValue < -MATE_BOUND) {
+        ttValue += ply;
+      }
 
-        const flag = meta >> 8;
-        if (
-          flag === FLAG_EXACT ||
-          (flag === FLAG_LOWER && score >= beta) ||
-          (flag === FLAG_UPPER && score <= alpha)
-        ) {
-          return score;
-        }
+      if (
+        excludedMove === 0 &&
+        ttDepth >= depth &&
+        (ttFlag === FLAG_EXACT ||
+          (ttFlag === FLAG_LOWER && ttValue >= beta) ||
+          (ttFlag === FLAG_UPPER && ttValue <= alpha))
+      ) {
+        return ttValue;
       }
     }
 
@@ -353,10 +407,14 @@ export class Searcher {
       }
     }
 
-    // 生成伪合法着法并按启发式打分排序。
+    // 生成伪合法着法并按启发式打分排序（含 countermove 反制着法）。
+    const prevMove = this.opt.countermove ? pos.lastMove() : 0;
+    const counter =
+      prevMove !== 0 ? this.counterMoves[pos.cells[moveTo(prevMove)] * 90 + moveTo(prevMove)] : 0;
+
     const base = ply * MOVES_PER_PLY;
     const count = pos.genMoves(this.moveBuf, base, false);
-    this.scoreMoves(base, count, ttMove, ply);
+    this.scoreMoves(base, count, ttMove, ply, counter);
     this.sortMoves(base, count);
 
     let bestScore = NEG_INF;
@@ -368,6 +426,42 @@ export class Searcher {
 
     for (let i = 0; i < count; i++) {
       const move = this.moveBuf[base + i];
+      if (move === excludedMove) {
+        // 奇异延伸的验证搜索：跳过被排除着法。
+        continue;
+      }
+
+      // 奇异延伸：TT 主着法在排除自身后的验证搜索中仍守住奇异下界，
+      // 说明它显著优于其余候选，延伸一层看清战术后果。
+      // 排除搜索内不再递归触发（excludedMove !== 0）。
+      let extension = 0;
+      if (
+        this.opt.singularExtension &&
+        excludedMove === 0 &&
+        move === ttMove &&
+        depth >= 6 &&
+        ttDepth >= depth - 3 &&
+        ttFlag !== FLAG_UPPER &&
+        Math.abs(ttValue) < MATE_BOUND
+      ) {
+        const singularBeta = Math.max(ttValue - depth * 2, -MATE_BOUND);
+        const singularScore = this.searchNode(
+          (depth - 1) >> 1,
+          singularBeta - 1,
+          singularBeta,
+          ply,
+          false,
+          move,
+        );
+        if (this.aborted) {
+          return 0;
+        }
+
+        if (singularScore < singularBeta) {
+          extension = 1;
+        }
+      }
+
       const isCapture = pos.cells[moveTo(move)] !== 0;
       pos.make(move);
       if (pos.inCheck(!pos.redToMove)) {
@@ -379,7 +473,7 @@ export class Searcher {
       legalCount++;
       let score: number;
       if (legalCount === 1) {
-        score = -this.searchNode(depth - 1, -beta, -alpha, ply + 1, true);
+        score = -this.searchNode(depth - 1 + extension, -beta, -alpha, ply + 1, true);
       } else {
         // LMR：晚着安静着法按深搜与序位减 1-2 层零窗口试探，
         // 超 alpha 时先还原再开全窗复搜（保证不丢精确值）。
@@ -392,12 +486,18 @@ export class Searcher {
                 ? 1
                 : 0
             : 0;
-        score = -this.searchNode(depth - 1 - reduce, -alpha - 1, -alpha, ply + 1, true);
+        score = -this.searchNode(
+          depth - 1 + extension - reduce,
+          -alpha - 1,
+          -alpha,
+          ply + 1,
+          true,
+        );
         if (score > alpha && reduce > 0) {
-          score = -this.searchNode(depth - 1, -alpha - 1, -alpha, ply + 1, true);
+          score = -this.searchNode(depth - 1 + extension, -alpha - 1, -alpha, ply + 1, true);
         }
         if (score > alpha && score < beta) {
-          score = -this.searchNode(depth - 1, -beta, -alpha, ply + 1, true);
+          score = -this.searchNode(depth - 1 + extension, -beta, -alpha, ply + 1, true);
         }
       }
       pos.unmake();
@@ -413,19 +513,27 @@ export class Searcher {
         alpha = score;
       }
       if (alpha >= beta) {
-        this.updateHeuristics(move, isCapture, depth, ply);
+        this.updateHeuristics(move, isCapture, depth, ply, prevMove);
         break;
       }
     }
 
     if (legalCount === 0) {
+      // 排除搜索全被跳过属人为结果，返回当前窗口下界而非将死分。
+      if (excludedMove !== 0) {
+        return alpha;
+      }
+
       // 无着可走：被将军为将死，否则困毙；中国象棋规则二者均判负。
       return -MATE_SCORE + ply;
     }
 
     const flag =
       bestScore >= beta ? FLAG_LOWER : bestScore <= originalAlpha ? FLAG_UPPER : FLAG_EXACT;
-    this.ttStore(depth, bestScore, flag, bestMove, ply);
+    if (excludedMove === 0) {
+      // 排除搜索（奇异验证）的结果不含被排除着法，不写入置换表。
+      this.ttStore(depth, bestScore, flag, bestMove, ply);
+    }
     return bestScore;
   }
 
@@ -518,11 +626,13 @@ export class Searcher {
     return best;
   }
 
-  /** 主搜索着法打分：TT 着法 > 吃子（MVV-LVA）> 杀手 > 历史。 */
-  private scoreMoves(base: number, count: number, ttMove: number, ply: number): void {
+  /** 主搜索着法打分：TT 着法 > 吃子（MVV-LVA + 吃子历史）> 杀手 > 反制 > 历史。 */
+  private scoreMoves(base: number, count: number, ttMove: number, ply: number, counter: number): void {
     const pos = this.pos;
     const killer1 = this.killers[ply * 2];
     const killer2 = this.killers[ply * 2 + 1];
+    const useCap = this.opt.captureHistory;
+    const useCounter = this.opt.countermove && counter !== 0 && counter !== ttMove;
     for (let i = 0; i < count; i++) {
       const move = this.moveBuf[base + i];
       let score: number;
@@ -533,10 +643,16 @@ export class Searcher {
         if (victim !== 0) {
           score =
             SCORE_CAPTURE + PIECE_VALUE[victim] * 32 - PIECE_VALUE[pos.cells[moveFrom(move)]];
+          if (useCap) {
+            // 吃子历史：MVV-LVA 之上的细调项（归一化到 ±数百）。
+            score += Math.max(-512, Math.min(512, this.capHistory[victim * 90 + moveTo(move)] >> 8));
+          }
         } else if (move === killer1) {
           score = SCORE_KILLER1;
         } else if (move === killer2) {
           score = SCORE_KILLER2;
+        } else if (useCounter && move === counter) {
+          score = SCORE_COUNTER;
         } else {
           score = this.history[pos.cells[moveFrom(move)] * 90 + moveTo(move)];
         }
@@ -561,9 +677,25 @@ export class Searcher {
     }
   }
 
-  /** beta 截断时更新杀手与历史表（仅安静着法）。 */
-  private updateHeuristics(move: number, isCapture: boolean, depth: number, ply: number): void {
+  /** beta 截断时更新杀手、历史、反制与吃子历史表。 */
+  private updateHeuristics(
+    move: number,
+    isCapture: boolean,
+    depth: number,
+    ply: number,
+    prevMove: number,
+  ): void {
     if (isCapture) {
+      // 吃子历史：以被吃子与终点为键累计增益，走差了（未截断）时衰减。
+      if (this.opt.captureHistory) {
+        const idx = this.pos.cells[moveTo(move)] * 90 + moveTo(move);
+        this.capHistory[idx] += depth << 8;
+        if (this.capHistory[idx] > 1 << 22) {
+          for (let i = 0; i < this.capHistory.length; i++) {
+            this.capHistory[i] >>= 1;
+          }
+        }
+      }
       return;
     }
 
@@ -579,6 +711,11 @@ export class Searcher {
       for (let i = 0; i < this.history.length; i++) {
         this.history[i] >>= 1;
       }
+    }
+
+    // 反制着法：上一着（对方刚走的子与落点）→ 我方引发截断的应着。
+    if (this.opt.countermove && prevMove !== 0) {
+      this.counterMoves[this.pos.cells[moveTo(prevMove)] * 90 + moveTo(prevMove)] = move;
     }
   }
 
