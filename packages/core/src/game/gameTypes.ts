@@ -28,6 +28,8 @@ export interface MoveAppliedEventArgs {
   readonly chinese: string;
   /** 是否吃子。 */
   readonly isCapture: boolean;
+  /** 被吃棋子编码（无吃子为 Piece.Empty；UI 据此播放被吃子淡出动画）。 */
+  readonly capturedPiece: number;
   /** 是否红方走子。 */
   readonly isRedMove: boolean;
   /** 走子后对方是否被将军。 */

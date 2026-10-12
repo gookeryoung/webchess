@@ -16,3 +16,5 @@ packages/miniapp/miniprogram/lib/
 packages/miniapp/miniprogram/workers/
 packages/miniapp/miniprogram/images/
 packages/miniapp/miniprogram/sounds/
+/.trae/
+.pnpm-store/

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { GameMode, LessonLibrary, Position, PuzzleLibrary } from '@webchess/core';
+import { GameMode, LessonLibrary, Piece, Position, PuzzleLibrary } from '@webchess/core';
 import type { AudioPlayer, KeyValueStorage, SoundEffect } from '@webchess/adapters';
 import { AppController } from '../AppController.js';
 
@@ -70,8 +70,25 @@ describe('AppController 五态路由', () => {
     const snap = controller.getSnapshot();
     expect(snap.history).toHaveLength(1);
     expect(snap.lastMove?.toUcci()).toBe('h2e2');
+    expect(snap.lastMoveCapture).toBeNull();
     expect(snap.redToMove).toBe(false);
     expect(audio.played).toContain('move');
+  });
+
+  it('吃子快照携带被吃棋子编码，悔棋后清空', () => {
+    // 黑帅(4,0)、红车(4,4)、黑车(4,5)、红帅(3,9)：红车吃黑车。
+    expect(controller.loadFen('4k4/9/9/9/4R4/4r4/9/9/9/3K5 w')).toBe(true);
+    controller.onBoardClick(new Position(4, 4));
+    controller.onBoardClick(new Position(4, 5));
+    const snap = controller.getSnapshot();
+    expect(snap.history).toHaveLength(1);
+    expect(snap.lastMoveCapture).toBe(Piece.BlackRook);
+
+    controller.undo();
+    const reverted = controller.getSnapshot();
+    expect(reverted.history).toHaveLength(0);
+    expect(reverted.lastMove).toBeNull();
+    expect(reverted.lastMoveCapture).toBeNull();
   });
 
   it('无引擎时切人机模式被拒绝', () => {
@@ -189,5 +206,61 @@ describe('AppController 五态路由', () => {
     controller.newGame();
     expect(notified).toBeGreaterThan(0);
     unsubscribe();
+  });
+
+  it('教学页行数据：列出课程并标记进行中', () => {
+    const rows = controller.getLessonRows();
+    expect(rows).toHaveLength(LessonLibrary.length);
+    expect(rows.every((r) => r.title.length > 0 && r.intro.length > 0)).toBe(true);
+    expect(rows.every((r) => !r.current)).toBe(true);
+
+    controller.startLesson(lessonByTitle('马走日'));
+    const current = controller.getLessonRows().filter((r) => r.current);
+    expect(current).toHaveLength(1);
+    expect(current[0]!.title).toBe('马走日');
+
+    expect(controller.lessonAt(0)).not.toBeNull();
+    expect(controller.lessonAt(999)).toBeNull();
+  });
+
+  it('残局页行数据：过关标记与尝试计数', () => {
+    expect(controller.getPuzzleRows().every((r) => !r.solved && r.attempts === 0)).toBe(true);
+
+    const puzzle = puzzleById('mate1-chongpao');
+    controller.startPuzzle(puzzle);
+    const row = controller.getPuzzleRows().find((r) => r.id === puzzle.id)!;
+    expect(row.attempts).toBe(1);
+    expect(row.current).toBe(true);
+
+    expect(controller.puzzleAt(0)).not.toBeNull();
+    expect(controller.puzzleAt(-1)).toBeNull();
+  });
+
+  it('打谱页行数据与着法跳转', () => {
+    expect(controller.getManualRows()).toHaveLength(0);
+
+    controller.openManual({ name: '测试棋谱', bytes: readManual('test_manual_v10.xqf') });
+    const rows = controller.getManualRows();
+    expect(rows).toHaveLength(4);
+    expect(rows[0]!.depth).toBe(1);
+    expect(rows[0]!.chinese.length).toBeGreaterThan(0);
+
+    // 直接跳到终局
+    controller.manualGotoDepth(4);
+    let snap = controller.getSnapshot();
+    expect(snap.manualDepth).toBe(4);
+    expect(snap.history).toHaveLength(4);
+    expect(snap.lastMove).not.toBeNull();
+    expect(controller.getManualRows()[3]!.isCurrent).toBe(true);
+
+    // 任意回跳
+    controller.manualGotoDepth(2);
+    snap = controller.getSnapshot();
+    expect(snap.manualDepth).toBe(2);
+    expect(snap.history).toHaveLength(2);
+
+    // 越界跳转不生效
+    controller.manualGotoDepth(9);
+    expect(controller.getSnapshot().manualDepth).toBe(2);
   });
 });

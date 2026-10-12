@@ -167,6 +167,7 @@ export class GameSession {
       move,
       chinese,
       isCapture: Piece.isValid(captured),
+      capturedPiece: captured,
       isRedMove,
       isCheck: Rule.isInCheck(this._board, this._board.redToMove),
       isCheckmate: Rule.isCheckmate(this._board, this._board.redToMove),

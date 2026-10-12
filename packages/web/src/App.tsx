@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { LessonLibrary, PuzzleLibrary } from '@webchess/core';
 import { AppController } from './app/AppController.js';
 import { BoardCanvas } from './components/BoardCanvas.js';
 import { Hud } from './components/Hud.js';
 import { Modal, PickList } from './components/Modal.js';
+import { PracticePage, PageKind } from './components/PracticePage.js';
 import { PieceImages, loadPieceImages } from './board/BoardRenderer.js';
 
 /** 内置棋谱（与 Godot 版 assets/manuals 同源）。 */
@@ -13,12 +13,13 @@ const BuiltinManuals: readonly { name: string; url: string }[] = [
   { name: '残局短局·两步（高版本加密）', url: 'manuals/demo_v16.xqf' },
 ];
 
-type DialogKind = 'none' | 'lesson' | 'puzzle' | 'manual';
+type DialogKind = 'none' | 'manual';
 
 export function App({ controller }: { controller: AppController }) {
   const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
   const [images, setImages] = useState<PieceImages | null>(null);
   const [dialog, setDialog] = useState<DialogKind>('none');
+  const [page, setPage] = useState<PageKind>('none');
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -71,9 +72,9 @@ export function App({ controller }: { controller: AppController }) {
         <Hud
           controller={controller}
           snapshot={snapshot}
-          onOpenLessons={() => setDialog('lesson')}
-          onOpenPuzzles={() => setDialog('puzzle')}
-          onOpenManuals={() => setDialog('manual')}
+          onOpenLessons={() => setPage('lesson')}
+          onOpenPuzzles={() => setPage('puzzle')}
+          onOpenManuals={() => (snapshot.manualOpen ? setPage('manual') : setDialog('manual'))}
         />
       </main>
 
@@ -96,29 +97,12 @@ export function App({ controller }: { controller: AppController }) {
         }}
       />
 
-      {dialog === 'lesson' ? (
-        <Modal title="选择入门课程" okText="关闭" onCancel={() => setDialog('none')}>
-          <PickList
-            items={LessonLibrary.map((l) => l.title)}
-            onPick={(index) => {
-              setDialog('none');
-              controller.startLesson(LessonLibrary[index]);
-            }}
-          />
-        </Modal>
-      ) : null}
-
-      {dialog === 'puzzle' ? (
-        <Modal title="选择残局（√ 为已过关）" okText="关闭" onCancel={() => setDialog('none')}>
-          <PickList
-            items={PuzzleLibrary.map((p) => `${p.difficulty} 步 · ${p.title}`)}
-            onPick={(index) => {
-              setDialog('none');
-              controller.startPuzzle(PuzzleLibrary[index]);
-            }}
-          />
-        </Modal>
-      ) : null}
+      <PracticePage
+        kind={page}
+        controller={controller}
+        snapshot={snapshot}
+        onClose={() => setPage('none')}
+      />
 
       {dialog === 'manual' ? (
         <Modal title="选择打谱棋谱" okText="关闭" onCancel={() => setDialog('none')}>

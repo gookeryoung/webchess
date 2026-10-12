@@ -237,23 +237,18 @@ export class BoardRenderer {
         const center = cellCenter(g, x, y);
         let px = center.x;
         let py = center.y;
-        let alpha = 1;
+        const alpha = 1;
 
         if (anim !== null && anim.move.to.x === x && anim.move.to.y === y) {
           const from = cellCenter(g, anim.move.from.x, anim.move.from.y);
           px = from.x + (center.x - from.x) * anim.progress;
           py = from.y + (center.y - from.y) * anim.progress;
-        }
 
-        if (
-          anim !== null &&
-          state.animationCapture !== null &&
-          state.animationCapture !== Piece.Empty &&
-          anim.move.to.x === x &&
-          anim.move.to.y === y
-        ) {
-          // 被吃棋子淡出：此处以起点棋子覆盖绘制，被吃子不再单独绘制。
-          alpha = 1;
+          const capture = state.animationCapture;
+          if (capture !== null && Piece.isValid(capture)) {
+            // 被吃棋子在终点原位淡出（绘制于移动棋子下层，随进度渐隐）。
+            this.drawPiece(ctx, g, capture, center.x, center.y, 1 - anim.progress);
+          }
         }
 
         if (anim !== null && anim.move.from.x === x && anim.move.from.y === y) {
