@@ -292,3 +292,299 @@ body {
 .field input[type='range'] {
   flex: 1;
 }
+
+/* ── 练习页面（文房棋馆·谱册式覆盖面板） ─────────────────── */
+
+.page-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(28, 24, 18, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  z-index: 30;
+  animation: page-fade 0.22s ease-out;
+}
+
+.page-panel {
+  width: min(640px, 100%);
+  max-height: min(78vh, 640px);
+  display: flex;
+  flex-direction: column;
+  background:
+    repeating-linear-gradient(0deg, rgba(138, 90, 43, 0.028) 0 2px, transparent 2px 5px),
+    var(--panel);
+  border: 1px solid rgba(138, 90, 43, 0.32);
+  border-radius: 14px;
+  box-shadow:
+    0 18px 48px rgba(28, 24, 18, 0.28),
+    inset 0 0 0 6px rgba(242, 220, 174, 0.35);
+  overflow: hidden;
+  animation: page-rise 0.26s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.page-title {
+  margin: 0;
+  font-family: 'KaiTi', 'STKaiti', serif;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 4px;
+  color: var(--ink);
+}
+
+.page-title::after {
+  content: '';
+  display: block;
+  width: 34px;
+  height: 3px;
+  margin-top: 4px;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+.page-close {
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink-dim);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.page-close:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.page-body {
+  padding: 12px 18px 18px;
+  overflow: auto;
+}
+
+.page-meta {
+  margin: 2px 0 10px;
+  font-size: 13px;
+  color: var(--ink-dim);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: baseline;
+}
+
+.page-foot {
+  margin-top: 12px;
+  margin-bottom: 0;
+}
+
+.page-meta b {
+  color: var(--accent);
+}
+
+.manual-name {
+  font-family: 'KaiTi', 'STKaiti', serif;
+  font-size: 15px;
+  color: var(--ink);
+}
+
+.manual-info {
+  font-size: 12px;
+}
+
+/* 列表：错落入场 */
+.lesson-list,
+.puzzle-list,
+.manual-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lesson-list > li,
+.puzzle-list > li,
+.manual-list > li {
+  animation: item-in 0.3s ease-out both;
+  animation-delay: calc(var(--i, 0) * 45ms);
+}
+
+.lesson-item,
+.puzzle-item {
+  width: 100%;
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  cursor: pointer;
+  position: relative;
+}
+
+.lesson-item:hover,
+.puzzle-item:hover,
+.manual-item:hover {
+  border-color: var(--accent);
+}
+
+.is-current {
+  border-color: rgba(163, 45, 45, 0.55);
+  background: var(--accent-soft);
+}
+
+.item-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.item-title {
+  font-family: 'KaiTi', 'STKaiti', serif;
+  font-size: 16px;
+  color: var(--ink);
+}
+
+.item-sub {
+  font-size: 12px;
+  color: var(--ink-dim);
+}
+
+.item-flag {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--accent);
+  border: 1px solid rgba(163, 45, 45, 0.4);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+/* 朱砂过关印 */
+.puzzle-seal {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'KaiTi', 'STKaiti', serif;
+  font-size: 15px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--accent);
+  border-radius: 7px;
+  transform: rotate(-6deg);
+  box-shadow: 0 1px 4px rgba(163, 45, 45, 0.4);
+}
+
+.puzzle-seal[aria-hidden='true'] {
+  background: transparent;
+  border: 1px dashed var(--line);
+  box-shadow: none;
+  color: transparent;
+}
+
+/* 打谱着法列表 */
+.manual-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+  gap: 6px;
+}
+
+.manual-item {
+  width: 100%;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.manual-no {
+  flex: 0 0 auto;
+  min-width: 20px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--ink-dim);
+  background: rgba(241, 239, 232, 0.9);
+  border-radius: 4px;
+  padding: 1px 3px;
+}
+
+.manual-chs {
+  font-family: 'KaiTi', 'STKaiti', serif;
+  font-size: 15px;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.manual-note {
+  flex: 0 0 auto;
+  font-size: 10px;
+  color: #854f0b;
+  border: 1px solid rgba(133, 79, 11, 0.4);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.manual-branch {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--accent);
+  border: 1px solid rgba(163, 45, 45, 0.4);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+@keyframes page-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes page-rise {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.98);
+  }
+}
+
+@keyframes item-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-mask,
+  .page-panel,
+  .lesson-list > li,
+  .puzzle-list > li,
+  .manual-list > li {
+    animation: none;
+  }
+}

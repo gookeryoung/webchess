@@ -36,12 +36,44 @@ import { AudioPlayer, KeyValueStorage } from '@webchess/adapters';
 
 export type PracticeKind = 'none' | 'lesson' | 'puzzle' | 'manual';
 
+/** 教学页课程行数据。 */
+export interface LessonRow {
+  readonly index: number;
+  readonly id: string;
+  readonly title: string;
+  readonly intro: string;
+  readonly current: boolean;
+}
+
+/** 残局页题目行数据。 */
+export interface PuzzleRow {
+  readonly index: number;
+  readonly id: string;
+  readonly title: string;
+  readonly difficulty: number;
+  readonly solved: boolean;
+  readonly attempts: number;
+  readonly current: boolean;
+}
+
+/** 打谱页主线着法行数据。 */
+export interface ManualRow {
+  readonly depth: number;
+  readonly chinese: string;
+  readonly annotation: string | null;
+  /** 该着的变着分支数（含主线；大于 1 表示存在变着）。 */
+  readonly branchCount: number;
+  readonly isCurrent: boolean;
+}
+
 export interface AppSnapshot {
   fen: string;
   redToMove: boolean;
   isGameOver: boolean;
   history: readonly HistoryRecord[];
   lastMove: Move | null;
+  /** 最近一着被吃的棋子编码（无吃子为 null），供走子动画淡出。 */
+  lastMoveCapture: number | null;
   checkedKing: Position | null;
   selected: Position | null;
   targets: readonly Position[];
@@ -84,11 +116,14 @@ export class AppController {
   private hint: Move | null = null;
   private arrows: readonly { from: Position; to: Position }[] = [];
   private lastMove: Move | null = null;
+  private lastMoveCapture: number | null = null;
   private evalLines: readonly string[] = [];
   private analysisActive = false;
   private practice: PracticeKind = 'none';
   private practiceTitle = '';
   private practiceHint = '';
+  /** 打谱跳转重放中：抑制逐着音效/状态/分析刷新，仅由跳转终点统一收口。 */
+  private replaying = false;
 
   constructor(
     private readonly storage: KeyValueStorage,
@@ -141,6 +176,7 @@ export class AppController {
       isGameOver: this.session.isGameOver,
       history: this.session.history,
       lastMove: this.lastMove,
+      lastMoveCapture: this.lastMoveCapture,
       checkedKing: Rule.isInCheck(board, board.redToMove) ? board.findKing(board.redToMove) : null,
       selected: this.selected,
       targets: this.targets,
@@ -511,6 +547,138 @@ export class AppController {
     this.setStatus(`【${puzzle.title}】${puzzle.description}`);
   }
 
+  // ---------- 页面行数据 ----------
+
+  /** 取第 index 门课程定义（越界返回 null）。 */
+  lessonAt(index: number): LessonDefinition | null {
+    return LessonLibrary[index] ?? null;
+  }
+
+  /** 取第 index 道残局题定义（越界返回 null）。 */
+  puzzleAt(index: number): PuzzleDefinition | null {
+    return PuzzleLibrary[index] ?? null;
+  }
+
+  /** 教学页课程列表（含当前进行中的课程标记）。 */
+  getLessonRows(): readonly LessonRow[] {
+    const currentId = this.lessonController.current?.id ?? null;
+    return LessonLibrary.map((lesson, index) => ({
+      index,
+      id: lesson.id,
+      title: lesson.title,
+      intro: lesson.intro,
+      current: lesson.id === currentId,
+    }));
+  }
+
+  /** 残局页题目列表（含过关标记与尝试次数）。 */
+  getPuzzleRows(): readonly PuzzleRow[] {
+    const currentId = this.puzzleController.current?.id ?? null;
+    return PuzzleLibrary.map((puzzle, index) => ({
+      index,
+      id: puzzle.id,
+      title: puzzle.title,
+      difficulty: puzzle.difficulty,
+      solved: this.progress.isSolved(puzzle.id),
+      attempts: this.progress.attempts(puzzle.id),
+      current: puzzle.id === currentId,
+    }));
+  }
+
+  /** 打谱页主线着法列表；未打开棋谱时返回空数组。 */
+  getManualRows(): readonly ManualRow[] {
+    const doc = this.manualController.manual;
+    if (doc === null) {
+      return [];
+    }
+
+    const currentDepth = this.manualController.currentDepth;
+    const rows: ManualRow[] = [];
+    const path: MoveNode[] = [];
+    for (
+      let node: MoveNode = doc.root;
+      node.children.length > 0;
+      node = node.children[0]
+    ) {
+      const next = node.children[0];
+      path.push(next);
+      rows.push({
+        depth: path.length,
+        chinese: this.chineseAlong(path),
+        annotation: next.annotation,
+        branchCount: next.children.length,
+        isCurrent: path.length === currentDepth,
+      });
+    }
+
+    return rows;
+  }
+
+  /** 计算主线/支线路径末着的中文记谱（在其父局面下求值）。 */
+  private chineseAlong(path: readonly MoveNode[]): string {
+    const doc = this.manualController.manual;
+    const last = path[path.length - 1];
+    if (doc === null || last === undefined || last.move === null) {
+      return '';
+    }
+
+    const board = doc.initialBoard.clone();
+    for (let i = 0; i < path.length - 1; i++) {
+      board.doMove(path[i]!.move!);
+    }
+
+    return ChineseNotation.toChinese(board, last.move);
+  }
+
+  /**
+   * 打谱跳转到主线第 depth 着（1 起）：从初始局面沿主线重放到目标位置，
+   * 保持「游标 ↔ 会话历史」同步不变量（跳转后仍可正常后退/悔棋），
+   * 供着法列表点击跳转（与逐着前进等效，但可任意回跳）。
+   */
+  manualGotoDepth(depth: number): void {
+    const doc = this.manualController.manual;
+    if (doc === null || depth < 1 || depth > this.manualController.mainlineCount) {
+      return;
+    }
+
+    const path: MoveNode[] = [];
+    for (let node: MoveNode = doc.root; node.children.length > 0 && path.length < depth; ) {
+      const next = node.children[0];
+      path.push(next);
+      node = next;
+    }
+
+    const target = path[path.length - 1];
+    if (target === undefined || target.move === null) {
+      return;
+    }
+
+    this.clearSelection();
+    this.replaying = true;
+    try {
+      if (!this.session.loadFen(this.manualController.initialFen)) {
+        this.setStatus('引擎思考中，暂不能跳转');
+        return;
+      }
+
+      this.manualController.rewind();
+      for (const step of path) {
+        if (!this.session.tryPlayMove(step.move!)) {
+          this.setStatus('跳转失败：着法无法落地');
+          return;
+        }
+
+        this.manualController.advanceTo(step);
+      }
+    } finally {
+      this.replaying = false;
+    }
+
+    this.lastMove = target.move;
+    this.reportManualPosition(target, this.chineseAlong(path));
+    void this.refreshAnalysis();
+  }
+
   /** 打开棋谱（PGN 文本或 XQF 字节）。 */
   openManual(source: { name: string; text?: string; bytes?: Uint8Array }): void {
     this.exitPracticeControllers();
@@ -537,6 +705,7 @@ export class AppController {
       .filter((s) => s.length > 0)
       .join(' · ');
     this.lastMove = null;
+    this.lastMoveCapture = null;
     this.showBranchArrows();
     this.setStatus(
       `【打谱】${source.name}${this.practiceHint ? ` · ${this.practiceHint}` : ''} — 共 ${this.manualController.mainlineCount} 着` +
@@ -562,6 +731,7 @@ export class AppController {
     this.session.loadFen(this.manualController.initialFen);
     this.manualController.rewind();
     this.lastMove = null;
+    this.lastMoveCapture = null;
     this.showBranchArrows();
     this.setStatus(`【打谱】回到开局（共 ${this.manualController.mainlineCount} 着）`);
   }
@@ -596,11 +766,19 @@ export class AppController {
     move: Move;
     chinese: string;
     isCapture: boolean;
+    capturedPiece: number;
     isRedMove: boolean;
     isCheck: boolean;
     isCheckmate: boolean;
     isStalemate: boolean;
   }): void {
+    // 无论是否处于重放，均记录最后一着的被吃子（重放时逐着覆盖，终点值即为目标着的值）。
+    this.lastMoveCapture = Piece.isValid(e.capturedPiece) ? e.capturedPiece : null;
+    if (this.replaying) {
+      // 打谱跳转重放：音效与逐着状态由跳转终点统一收口。
+      return;
+    }
+
     this.audio.play(e.isCapture ? 'capture' : 'move');
     this.lastMove = e.move;
     if (this.manualController.isOpen === false) {
@@ -623,6 +801,10 @@ export class AppController {
   }
 
   private onBoardReverted(): void {
+    // 悔棋/重载后 lastMove 对齐历史尾部，避免高亮与被吃子残留到已撤销的着法上。
+    const last = this.session.history[this.session.history.length - 1] ?? null;
+    this.lastMove = last === null ? null : last.move;
+    this.lastMoveCapture = null;
     this.selected = null;
     this.targets = [];
     this.hint = null;
