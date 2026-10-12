@@ -1,3 +1,6 @@
+// @vitest-environment node
+// 说明：本文件经 import.meta.url 读取 core/test-data 棋谱文件，jsdom 环境下
+// import.meta.url 是 http 方案（readFileSync 拒绝非 file URL），故显式回到 node 环境。
 import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { GameMode, LessonLibrary, Piece, Position, PuzzleLibrary } from '@webchess/core';

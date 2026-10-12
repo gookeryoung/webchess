@@ -380,7 +380,7 @@ export class AppController {
         .filter((b) => b.move !== null)
         .map((b) => ({ from: b.move!.from, to: b.move!.to }));
     } else if (current.annotation !== null && current.annotation.length > 0) {
-      text += `　注：${current.annotation}`;
+      text += `\u3000注：${current.annotation}`;
       this.arrows = [];
     } else if (this.manualController.isAtEnd) {
       text += '（终局）';

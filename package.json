@@ -8,13 +8,17 @@
     "build": "pnpm -r run build",
     "test": "pnpm -r run test",
     "typecheck": "pnpm -r run typecheck",
+    "lint": "pnpm -r run lint",
     "dev": "pnpm --filter @webchess/web dev",
+    "e2e": "pnpm --filter @webchess/web run e2e",
+    "e2e:smoke": "pnpm --filter @webchess/web run e2e:smoke",
+    "e2e:critical": "pnpm --filter @webchess/web run e2e:critical",
     "smoke": "node scripts/smoke-core.mjs",
     "smoke:web": "node scripts/smoke-web.mjs",
     "smoke:miniapp": "node scripts/smoke-miniapp.mjs",
     "miniapp": "pnpm --filter @webchess/miniapp run build && pnpm run smoke:miniapp",
     "check:purity": "node scripts/check-core-purity.mjs",
-    "check": "pnpm run typecheck && pnpm run check:purity && pnpm run test && pnpm run build && pnpm run miniapp && pnpm run smoke && pnpm run smoke:web"
+    "check": "pnpm run typecheck && pnpm run check:purity && pnpm run lint && pnpm run test && pnpm run build && pnpm run miniapp && pnpm run smoke && pnpm run smoke:web"
   },
   "engines": {
     "node": ">=20"

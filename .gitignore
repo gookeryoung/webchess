@@ -7,6 +7,13 @@ coverage/
 .idea/
 *.tsbuildinfo
 .pnpm-store/
+.eslintcache
+
+# Playwright 产物（报告 / 截图 / trace / 缓存）
+playwright-report/
+test-results/
+blob-report/
+.local-ms-playwright/
 
 # 本地协作产物（需求/迭代记录），不进入版本库
 /.trae/
