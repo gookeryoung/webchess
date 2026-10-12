@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Board, cellIndex, Piece, Position, Rule, BOARD_WIDTH, BOARD_HEIGHT } from '@webchess/core';
+import { Board, cellIndex, Move, Piece, Position, Rule, BOARD_WIDTH, BOARD_HEIGHT } from '@webchess/core';
 import { MATE_SCORE } from '../evaluate.js';
 import { Searcher } from '../index.js';
 
@@ -113,5 +113,55 @@ describe('MATE_SCORE — 在搜索中的表现', () => {
     expect(outcome.bestMove?.toUcci()).toBe('e7e8');
     // 红方赢 → score 接近 MATE_SCORE
     expect(outcome.score).toBeGreaterThan(MATE_SCORE - 10000);
+  });
+});
+
+describe('Searcher — 棋力强化回归', () => {
+  it('两步杀（双车错）：返回 mate 分值且首着为将军杀着', () => {
+    // 红车 b8/a9 + 红兵 e3 封 e2，双车底线绞杀黑将 e0。
+    const fen = '4k4/9/9/4P4/9/9/9/9/1R7/R3K4 w - - 0 1';
+    const board = Board.fromFen(fen);
+    const outcome = new Searcher().search(board, { maxDepth: 5, moveTimeMs: 5000 });
+    expect(outcome.score).toBeGreaterThanOrEqual(MATE_SCORE - 10);
+    expect(outcome.score).toBeLessThanOrEqual(MATE_SCORE);
+
+    const move = outcome.bestMove!;
+    const isKill1 = move.from.x === 1 && move.from.y === 8 && move.to.x === 1 && move.to.y === 0;
+    const isKill2 = move.from.x === 0 && move.from.y === 9 && move.to.x === 0 && move.to.y === 0;
+    expect(isKill1 || isKill2).toBe(true);
+    // 主变例至少推进到杀着完成。
+    expect(outcome.pv.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('白吃车：无保护黑车必被吃掉', () => {
+    // 红马 b6 可吃 a4 无根黑车，吃后无反吃。
+    const fen = '4k4/9/9/9/r8/9/1N7/9/9/3K5 w - - 0 1';
+    const board = Board.fromFen(fen);
+    const outcome = new Searcher().search(board, { maxDepth: 4, moveTimeMs: 5000 });
+    expect(outcome.bestMove!.from.x).toBe(1);
+    expect(outcome.bestMove!.from.y).toBe(6);
+    expect(outcome.bestMove!.to.x).toBe(0);
+    expect(outcome.bestMove!.to.y).toBe(4);
+    expect(outcome.score).toBeGreaterThan(400);
+  });
+
+  it('困毙判负：无着可走且未被将军时返回判负分而非 0 分', () => {
+    // 红帅 e9 三出口被真实攻击：d9/f9 被黑马 c7/g7 控制（马腿 c8/g8 空），
+    // e8 被黑卒 e7 前进控制；黑卒 e7 同时隔断将帅照面。
+    const fen = '4k4/9/9/9/9/9/9/2n1p1n2/9/4K4 w - - 0 1';
+    const board = Board.fromFen(fen);
+    // 局面自检：红方未被将军但无合法着法（困毙）。
+    expect(Rule.isStalemate(board, true)).toBe(true);
+
+    const outcome = new Searcher().search(board, { maxDepth: 2, moveTimeMs: 3000 });
+    expect(outcome.bestMove).toBeNull();
+    expect(outcome.score).toBeLessThanOrEqual(-MATE_SCORE + 1);
+  });
+
+  it('性能下限：起始局面 1000ms 内达到 6 层以上（旧实现仅 4-5 层）', () => {
+    const outcome = new Searcher().search(new Board(), { maxDepth: 12, moveTimeMs: 1000 });
+    expect(outcome.stats.depth).toBeGreaterThanOrEqual(6);
+    expect(outcome.bestMove).toBeInstanceOf(Move);
+    expect(outcome.stats.elapsedMs).toBeLessThan(2500);
   });
 });

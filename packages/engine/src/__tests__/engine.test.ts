@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Board, Move, Rule } from '@webchess/core';
-import { BuiltinEngine, Searcher } from '../index.js';
+import { BuiltinEngine, createBuiltinEngine, Searcher } from '../index.js';
 
 function legalUcciSet(board: Board): Set<string> {
   return new Set(Rule.getAllLegalMoves(board, board.redToMove).map((m) => m.toUcci()));
@@ -71,5 +71,47 @@ describe('内置搜索引擎', () => {
     expect(outcome.stats.depth).toBeGreaterThanOrEqual(1);
     expect(outcome.stats.elapsedMs).toBeLessThan(2000);
     expect(outcome.bestMove).toBeInstanceOf(Move);
+  });
+});
+
+describe('内置引擎强度设置', () => {
+  it('applyOptions(ELO) 生效：显式 depth 被强度上限收紧', async () => {
+    const engine = new BuiltinEngine(10, 1000);
+    await engine.start();
+    // ELO 1500 + limitStrength → 深度上限 3。
+    await engine.applyOptions({ elo: 1500, limitStrength: true });
+
+    const depths: number[] = [];
+    engine.onInfo((info) => depths.push(info.depth));
+    const result = await engine.go({ fen: new Board().toFen(), depth: 10, moveTimeMs: 500 });
+
+    expect(result.bestMove).not.toBeNull();
+    expect(Math.max(...depths)).toBeLessThanOrEqual(3);
+    expect(Math.max(...depths)).toBeGreaterThanOrEqual(1);
+  });
+
+  it('createBuiltinEngine(skillLevel=0) 生效：深度上限为 1', async () => {
+    const engine = createBuiltinEngine({ skillLevel: 0 });
+    await engine.start();
+
+    const depths: number[] = [];
+    engine.onInfo((info) => depths.push(info.depth));
+    await engine.go({ fen: new Board().toFen(), depth: 10, moveTimeMs: 500 });
+
+    expect(depths.length).toBeGreaterThan(0);
+    expect(Math.max(...depths)).toBe(1);
+  });
+
+  it('未设置强度时显式 depth 全额生效', async () => {
+    const engine = new BuiltinEngine(10, 1000);
+    await engine.start();
+    // 无 elo/skill → 不限制。
+    await engine.applyOptions({ threads: 1, hashMb: 16 });
+
+    const depths: number[] = [];
+    engine.onInfo((info) => depths.push(info.depth));
+    await engine.go({ fen: new Board().toFen(), depth: 4, moveTimeMs: 3000 });
+
+    expect(Math.max(...depths)).toBe(4);
   });
 });
