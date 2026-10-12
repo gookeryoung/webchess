@@ -95,7 +95,9 @@ if (workerChunk === undefined) {
 
 // 在服务器句柄完全关闭后退出：Windows + 新版 node 下先 exit 再关句柄
 // 会触发 libuv win/async.c 的 UV_HANDLE_CLOSING 断言导致进程崩溃。
-server.close(() => {
-  console.log(failed === 0 ? '\n[smoke-web] 全部通过' : `\n[smoke-web] ${failed} 项失败`);
-  process.exit(failed === 0 ? 0 : 1);
-});
+// 不调用 process.exit（无论同步还是延迟调用都复现断言）：
+// 关闭 server 后仅设置退出码，让事件循环排空后自然退出。
+await new Promise((resolve) => server.close(resolve));
+server.closeAllConnections?.();
+console.log(failed === 0 ? '\n[smoke-web] 全部通过' : `\n[smoke-web] ${failed} 项失败`);
+process.exitCode = failed === 0 ? 0 : 1;

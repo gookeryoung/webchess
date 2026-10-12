@@ -1,6 +1,34 @@
 import { Board, Move, Position } from '@webchess/core';
 import { FastPosition, MAX_PLY, moveFrom, moveTo } from './fastBoard.js';
-import { evaluateFast, MATE_SCORE, PIECE_VALUE } from './evaluate.js';
+import { MATE_SCORE, PIECE_VALUE } from './evaluate.js';
+import { acquireWasmPosition } from './wasmCore.js';
+
+/**
+ * 搜索用局面抽象：FastPosition（纯 TS）与 WasmPosition（WASM 内核）的公共结构。
+ * Searcher 全程面向该接口编程，后端在构造时定型，运行路径完全一致。
+ */
+interface SearchPosition {
+  readonly cells: Uint8Array;
+  readonly moveBuffer: Int32Array;
+  readonly redToMove: boolean;
+  readonly keyLo: number;
+  readonly keyHi: number;
+  readonly baseScore: number;
+  readonly heavyRed: number;
+  readonly heavyBlack: number;
+  setFromBoard(board: Board): unknown;
+  make(move: number): void;
+  unmake(): void;
+  makeNull(): void;
+  unmakeNull(): void;
+  lastMove(): number;
+  genMoves(out: Int32Array, base: number, capturesOnly: boolean): number;
+  genLegalMoves(out: Int32Array, base: number): number;
+  inCheck(red: boolean): boolean;
+  isRepetition(): boolean;
+  see(to: number, firstFrom: number): number;
+  evaluateFull(): number;
+}
 
 /**
  * PVS 搜索引擎（迭代加深 + 数值键置换表 + 杀手/历史启发 + 空步裁剪 +
@@ -49,6 +77,11 @@ export interface SearcherOptions {
   captureHistory?: boolean;
   /** mate distance pruning（将死距离裁剪）。 */
   mateDistance?: boolean;
+  /**
+   * WASM 搜索内核：默认自动（核心已加载则优先使用，未加载回退纯 TS）；
+   * 显式 false 强制纯 TS（A/B 基线与降级测试用）。
+   */
+  wasm?: boolean;
 }
 
 /** 搜索统计（供 UI 显示与测试断言）。 */
@@ -97,8 +130,10 @@ export class Searcher {
   private readonly ttMoveArr = new Int32Array(TT_SIZE);
   private readonly ttMeta = new Int16Array(TT_SIZE);
 
-  private readonly pos = new FastPosition();
-  private readonly moveBuf = new Int32Array(MAX_PLY * MOVES_PER_PLY);
+  /** 搜索局面（构造时定型：WASM 实例或纯 TS 实现）。 */
+  private readonly pos: SearchPosition;
+  /** 走法缓冲（即 pos.moveBuffer，WASM 后端为零拷贝线性内存视图）。 */
+  private readonly moveBuf: Int32Array;
   private readonly scoreBuf = new Int32Array(MAX_PLY * MOVES_PER_PLY);
   private readonly killers = new Int32Array(MAX_PLY * 2);
   private readonly history = new Int32Array(15 * 90);
@@ -117,9 +152,15 @@ export class Searcher {
 
   constructor(options?: SearcherOptions) {
     Object.assign(this.opt, options);
+    // 后端定型：核心已加载且未显式禁用时用 WASM 实例，否则纯 TS。
+    this.pos =
+      (options?.wasm === false ? null : acquireWasmPosition()) ?? new FastPosition();
+    this.moveBuf = this.pos.moveBuffer;
+    this.rootMoves = this.pos.moveBuffer.subarray(0, MOVES_PER_PLY);
   }
 
-  private readonly rootMoves = new Int32Array(MOVES_PER_PLY);
+  /** 根着法缓冲（moveBuffer 前 256 项：根节点 ply=0，与 searchNode 的 ply≥1 区间无冲突）。 */
+  private readonly rootMoves: Int32Array;
   private readonly rootScores = new Int32Array(MOVES_PER_PLY);
   private rootCount = 0;
 
@@ -143,7 +184,9 @@ export class Searcher {
     this.deadline = start + moveTimeMs;
 
     this.pos.setFromBoard(board);
-    this.rootCount = this.pos.genLegalMoves(this.rootMoves, 0);
+    // 根节点 base=0：直接传实例 moveBuf 本体（WASM 后端校验缓冲身份，
+    // rootMoves 视图仅作同一段内存的只读别名）。
+    this.rootCount = this.pos.genLegalMoves(this.moveBuf, 0);
     if (this.rootCount === 0) {
       // 无着可走（将死或困毙）：当前走子方已输。
       return {
@@ -556,7 +599,7 @@ export class Searcher {
 
     const pos = this.pos;
     const stand = full
-      ? evaluateFast(pos)
+      ? pos.evaluateFull()
       : pos.redToMove
         ? pos.baseScore
         : -pos.baseScore;

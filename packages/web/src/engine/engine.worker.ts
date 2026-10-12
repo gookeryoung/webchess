@@ -1,9 +1,22 @@
-import { BuiltinEngine } from '@webchess/engine';
+import wasmUrl from '@webchess/engine/wasm/engine-core.wasm?url';
+import { BuiltinEngine, initEngineWasm } from '@webchess/engine';
 import { asWorkerScope, WorkerRequest, WorkerResponse } from './protocol.js';
 
 /**
  * 引擎 Worker 入口：在主线程之外执行 alpha-beta 搜索。
+ *
+ * WASM 内核预加载：须在实例化引擎前完成（Searcher 构造时定型后端）；
+ * 加载失败（网络异常 / 环境不支持）静默回退纯 TS，不影响功能。
  */
+try {
+  const response = await fetch(wasmUrl);
+  if (response.ok) {
+    await initEngineWasm(await response.arrayBuffer());
+  }
+} catch {
+  // 回退纯 TS 内核。
+}
+
 const engine = new BuiltinEngine();
 const scope = asWorkerScope();
 

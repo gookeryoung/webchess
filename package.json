@@ -22,5 +22,8 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "assemblyscript": "^0.28.20"
   }
 }

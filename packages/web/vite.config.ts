@@ -13,6 +13,8 @@ export default defineConfig({
     host: '127.0.0.1',
   },
   build: {
+    // 引擎 Worker 使用顶层 await 预加载 WASM 内核（ES module worker 本就要求现代浏览器）。
+    target: 'es2022',
     outDir: 'dist',
     sourcemap: true,
   },

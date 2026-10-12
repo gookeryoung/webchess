@@ -13,12 +13,13 @@ describe('evaluate — 静态评估', () => {
   });
 
   it('单方面多一车时评估应为大正值（红方视角）', () => {
-    // 红方多一车：车 920，对称局面下应为 +920 左右。
+    // 红方多一车：车 920，加位置表与残局动态项（车机动性×3、王活跃等），
+    // Texel 调参后上限放宽到 1200。
     const fen = '4k4/9/9/9/9/9/9/9/R8/4K4 w - - 0 1';
     const board = Board.fromFen(fen);
     const score = evaluate(board);
     expect(score).toBeGreaterThan(500);
-    expect(score).toBeLessThan(1100);
+    expect(score).toBeLessThan(1200);
   });
 
   it('黑方多一车时评估应为负值（红方视角）', () => {

@@ -10,10 +10,12 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
-    }
+    },
+    "./wasm/engine-core.wasm": "./wasm/engine-core.wasm"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json --noEmit",
+    "build:wasm": "asc assembly/engine-core.ts -o wasm/engine-core.wasm --runtime stub -O3 --noAssert",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit"
   },

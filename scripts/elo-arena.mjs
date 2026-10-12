@@ -11,11 +11,20 @@
  *     --outfile=/tmp/webchess-arena.cjs --log-level=error
  *   node /tmp/webchess-arena.cjs --games 20 --depth-a 4 --depth-b 6 --time-a 300 --time-b 300
  *
+ * 后端开关（默认双方纯 TS；--legacy-engine 侧恒为纯 TS）：
+ *   --wasm-a / --wasm-b  对应方启用 WASM 内核（须能读到 wasm 产物），
+ *                        同参数对比即测 WASM 加速比（NPS）与行为一致性。
+ *   --legacy-engine X    A 方外挂旧参数引擎 bundle（Texel 调参 A/B 基线，
+ *                        由 git show HEAD 的 engine src 另行打包）。
+ *
  * 终局语义与引擎一致：将死/困毙判走子方负；同局面三现、连续 120 半着
  * 无吃子、总 400 半着封顶均判和。A 方红黑各半局，消除先手优势偏差。
  */
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { Board, Rule } from '@webchess/core';
-import { Searcher } from '@webchess/engine';
+import { Searcher, initEngineWasm } from '@webchess/engine';
 
 function parseArgs(argv) {
   const args = {
@@ -25,11 +34,29 @@ function parseArgs(argv) {
     timeA: 300,
     timeB: 300,
     legacy: false,
+    wasmA: false,
+    wasmB: false,
+    legacyEngine: null,
   };
   for (let i = 2; i < argv.length; i++) {
     const key = argv[i];
     if (key === '--legacy') {
       args.legacy = true;
+      continue;
+    }
+
+    if (key === '--wasm-a') {
+      args.wasmA = true;
+      continue;
+    }
+
+    if (key === '--wasm-b') {
+      args.wasmB = true;
+      continue;
+    }
+
+    if (key === '--legacy-engine') {
+      args.legacyEngine = argv[++i];
       continue;
     }
 
@@ -132,17 +159,55 @@ function playGame(searcherA, searcherB, paramsA, paramsB, aIsRed) {
 }
 
 const args = parseArgs(process.argv);
+
+// WASM 内核：任一方启用时先加载（Searcher 构造期自动获取实例）。
+// 路径依次尝试 cwd（仓库根运行）与 bundle 所在目录（任意位置运行）。
+if (args.wasmA || args.wasmB) {
+  const candidates = [
+    resolve(process.cwd(), 'packages/engine/wasm/engine-core.wasm'),
+    new URL('../packages/engine/wasm/engine-core.wasm', import.meta.url),
+  ];
+  let bytes = null;
+  for (const p of candidates) {
+    try {
+      bytes = readFileSync(p).buffer;
+      break;
+    } catch {
+      // 尝试下一候选路径。
+    }
+  }
+
+  if (!bytes || !(await initEngineWasm(bytes))) {
+    throw new Error('WASM 内核加载失败（检查 packages/engine/wasm/engine-core.wasm）');
+  }
+}
+
 const paramsA = { maxDepth: args.depthA, moveTimeMs: args.timeA };
 const paramsB = { maxDepth: args.depthB, moveTimeMs: args.timeB };
-// --legacy：A 方关闭全部新搜索特性作为基线，B 方保持全开（测量新特性 Elo 增益）。
+// 后端定型：默认纯 TS（wasm:false），--wasm-x 侧走自动获取。
+const tsOnly = { wasm: false };
+const optionsA = args.wasmA ? undefined : tsOnly;
+const optionsB = args.wasmB ? undefined : tsOnly;
+// --legacy-engine：A 方换用外挂旧参数引擎（纯 TS，无 wasm 接入）。
+let legacySearcher = null;
+if (args.legacyEngine) {
+  const mod = await import(pathToFileURL(args.legacyEngine));
+  legacySearcher = (mod.default ?? mod).Searcher;
+}
+// --legacy：A 方关闭全部新搜索特性作为基线（测阶段 1 特性增益）。
 const legacyOptions = args.legacy
   ? { singularExtension: false, countermove: false, captureHistory: false, mateDistance: false }
   : undefined;
-const searcherA = new Searcher(legacyOptions);
-const searcherB = new Searcher();
+const searcherA = legacySearcher
+  ? new legacySearcher({ ...legacyOptions, wasm: false })
+  : new Searcher({ ...legacyOptions, ...optionsA });
+const searcherB = new Searcher(optionsB);
 
 console.log(
-  `--- 自对弈竞技场：A(depth=${args.depthA}, ${args.timeA}ms) vs B(depth=${args.depthB}, ${args.timeB}ms)，共 ${args.games} 局${args.legacy ? '（legacy 特性）' : ''} ---`,
+  `--- 自对弈竞技场：A(depth=${args.depthA}, ${args.timeA}ms, ` +
+    `${legacySearcher ? 'legacy参数' : args.wasmA ? 'wasm' : 'ts'}) vs ` +
+    `B(depth=${args.depthB}, ${args.timeB}ms, ${args.wasmB ? 'wasm' : 'ts'})，` +
+    `共 ${args.games} 局${args.legacy ? '（legacy 特性）' : ''} ---`,
 );
 
 let aWins = 0;
@@ -150,6 +215,10 @@ let bWins = 0;
 let draws = 0;
 let aDepthTotal = 0;
 let bDepthTotal = 0;
+let aNodesTotal = 0;
+let bNodesTotal = 0;
+let aElapsedTotal = 0;
+let bElapsedTotal = 0;
 let totalHalfmoves = 0;
 let reasonCount = { 绝杀: 0, 三现: 0, 限着: 0, 封顶: 0 };
 
@@ -167,6 +236,10 @@ for (let game = 0; game < args.games; game++) {
   else draws++;
   aDepthTotal += a.depthAvg;
   bDepthTotal += b.depthAvg;
+  aNodesTotal += a.nodes;
+  bNodesTotal += b.nodes;
+  aElapsedTotal += a.elapsed;
+  bElapsedTotal += b.elapsed;
   totalHalfmoves += halfmoves;
   reasonCount[reason]++;
 
@@ -180,10 +253,16 @@ for (let game = 0; game < args.games; game++) {
 const games = args.games;
 const scoreA = (aWins + draws * 0.5) / games;
 const elo = scoreA <= 0 ? -9999 : scoreA >= 1 ? 9999 : -400 * Math.log10(1 / scoreA - 1);
+const npsA = aNodesTotal / (aElapsedTotal / 1000);
+const npsB = bNodesTotal / (bElapsedTotal / 1000);
 
 console.log('--- 汇总 ---');
 console.log(`A ${aWins} 胜 / 和 ${draws} / ${bWins} 胜 B（A 得分率 ${(scoreA * 100).toFixed(1)}%）`);
 console.log(`ELO 差（A-B）：${elo >= 0 ? '+' : ''}${elo.toFixed(0)}`);
+console.log(
+  `NPS：A ${(npsA / 1000).toFixed(1)}k vs B ${(npsB / 1000).toFixed(1)}k` +
+    `（加速比 ${(npsA / npsB).toFixed(2)}x）`,
+);
 console.log(
   `平均深度 A ${aDepthTotal / games} vs B ${bDepthTotal / games}；` +
     `平均 ${totalHalfmoves / games} 半着/局；终局：` +

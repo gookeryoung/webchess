@@ -1,5 +1,5 @@
 import { Board, Piece } from '@webchess/core';
-import { PIECE_SCORE, PIECE_VALUE } from './evaluate.js';
+import { PIECE_SCORE, PIECE_VALUE, evaluateFast } from './evaluate.js';
 
 /**
  * 搜索专用快速局面（引擎内部实现，不对外暴露）。
@@ -15,9 +15,12 @@ import { PIECE_SCORE, PIECE_VALUE } from './evaluate.js';
 /** 搜索最大半着层数（主搜索 + 静态搜索共用栈空间）。 */
 export const MAX_PLY = 128;
 
-/** Zobrist 键：[棋子 15][格 90] 的 32 位低半 / 高半。 */
-const ZOB_LO = new Int32Array(15 * 90);
-const ZOB_HI = new Int32Array(15 * 90);
+/** 每层走法缓冲容量（单节点着法数上限约 200，留余量；WASM 端布局依赖此值）。 */
+export const MOVES_PER_PLY = 256;
+
+/** Zobrist 键：[棋子 15][格 90] 的 32 位低半 / 高半（WASM 端注入复用）。 */
+export const ZOB_LO = new Int32Array(15 * 90);
+export const ZOB_HI = new Int32Array(15 * 90);
 const ZOB_SIDE_LO = 0x1a2b3c4d | 0;
 const ZOB_SIDE_HI = 0x4d3c2b1a | 0;
 
@@ -120,6 +123,12 @@ export class FastPosition {
   cannonBlack = 0;
   /** 已走半着数（栈深度）。 */
   ply = 0;
+
+  /**
+   * 每层走法缓冲（Searcher 经此缓冲传入 genMoves；WASM 后端为线性内存视图，
+   * 结构要求：容量 MAX_PLY * MOVES_PER_PLY，基址布局与 assembly 端一致）。
+   */
+  readonly moveBuffer = new Int32Array(MAX_PLY * MOVES_PER_PLY);
 
   private readonly undoMove = new Int32Array(MAX_PLY);
   private readonly undoCap = new Uint8Array(MAX_PLY);
@@ -824,6 +833,11 @@ export class FastPosition {
     }
 
     return false;
+  }
+
+  /** 叶子节点静态评估（走子方视角）；WASM 后端覆写为调用 wasm evaluate。 */
+  evaluateFull(): number {
+    return evaluateFast(this);
   }
 
   /** 当前局面是否为搜索路径内的重复局面（同一 Zobrist 键再现，判和返回 0 分的依据）。 */
