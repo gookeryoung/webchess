@@ -1,5 +1,7 @@
 packages:
   - 'packages/*'
+overrides:
+  '@asamuzakjp/css-color': 7.1.4
 allowBuilds:
   esbuild: true
 minimumReleaseAgeExclude:
