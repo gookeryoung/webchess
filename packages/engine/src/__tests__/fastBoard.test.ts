@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Board, cellIndex, Move, Piece, Position, Rule } from '@webchess/core';
 import { encodeMove, FastPosition, moveFrom, moveTo } from '../fastBoard.js';
-import { PIECE_SCORE } from '../evaluate.js';
+import { PIECE_SCORE, PIECE_VALUE } from '../evaluate.js';
 
 /** 走法编码 → UCCI（经内核 Move，保证坐标系语义一致）。 */
 function moveToUcci(move: number): string {
@@ -234,5 +234,49 @@ describe('FastPosition — Zobrist 与增量维护', () => {
       pos.make(buf[i % count]);
       expect(pos.isRepetition()).toBe(false);
     }
+  });
+});
+
+describe('FastPosition — SEE 静态交换评估', () => {
+  it('车吃无根卒：白吃，收益为卒价值', () => {
+    const pos = new FastPosition().setFromBoard(
+      Board.fromFen('4k4/9/9/9/4p4/4R4/9/9/9/3K5 w - - 0 1'),
+    );
+    expect(pos.see(cellIndex(4, 4), cellIndex(4, 5))).toBe(PIECE_VALUE[Piece.BlackPawn]);
+  });
+
+  it('车吃有根卒：被卒吃回，净亏为车卒价值差', () => {
+    const pos = new FastPosition().setFromBoard(
+      Board.fromFen('4k4/9/9/4p4/4p4/4R4/9/9/9/3K5 w - - 0 1'),
+    );
+    expect(pos.see(cellIndex(4, 4), cellIndex(4, 5))).toBe(
+      -(PIECE_VALUE[Piece.RedRook] - PIECE_VALUE[Piece.BlackPawn]),
+    );
+  });
+
+  it('车吃有车保护的马：车马对兑，净亏为车马价值差', () => {
+    const pos = new FastPosition().setFromBoard(
+      Board.fromFen('4k4/9/9/r8/n8/9/9/R8/9/4K4 w - - 0 1'),
+    );
+    expect(pos.see(cellIndex(0, 4), cellIndex(0, 7))).toBe(
+      -(PIECE_VALUE[Piece.RedRook] - PIECE_VALUE[Piece.BlackKnight]),
+    );
+  });
+
+  it('马吃无根马：等价交换，收益为马价值', () => {
+    const pos = new FastPosition().setFromBoard(
+      Board.fromFen('4k4/9/9/9/3N5/5n3/9/9/9/3K5 w - - 0 1'),
+    );
+    expect(pos.see(cellIndex(5, 5), cellIndex(3, 4))).toBe(PIECE_VALUE[Piece.BlackKnight]);
+  });
+
+  it('SEE 不改变局面状态（occ 标记清理后可重复调用）', () => {
+    const pos = new FastPosition().setFromBoard(
+      Board.fromFen('4k4/9/9/4p4/4p4/4R4/9/9/9/3K5 w - - 0 1'),
+    );
+    const first = pos.see(cellIndex(4, 4), cellIndex(4, 5));
+    const second = pos.see(cellIndex(4, 4), cellIndex(4, 5));
+    expect(first).toBe(second);
+    expect(pos.ply).toBe(0);
   });
 });

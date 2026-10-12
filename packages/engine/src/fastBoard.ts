@@ -1,5 +1,5 @@
 import { Board, Piece } from '@webchess/core';
-import { PIECE_SCORE } from './evaluate.js';
+import { PIECE_SCORE, PIECE_VALUE } from './evaluate.js';
 
 /**
  * 搜索专用快速局面（引擎内部实现，不对外暴露）。
@@ -742,5 +742,183 @@ export class FastPosition {
     }
 
     return false;
+  }
+
+  /** SEE 专用：已虚拟移走标记（1=该格子参与交换的子已离开）。 */
+  private readonly seeOcc = new Uint8Array(90);
+  /** SEE 专用：攻击者格缓冲。 */
+  private readonly seeAtk = new Int32Array(16);
+  /** SEE 专用：交换收益表。 */
+  private readonly seeGain = new Int32Array(32);
+  /** SEE 专用：本轮动过的格（结束时清理 seeOcc）。 */
+  private readonly seeTouched = new Int32Array(40);
+
+  /**
+   * 收集 byRed 方对 sq 格的全部直接攻击者（不含将帅，不含 xray 车穿透；
+   * seeOcc 标记的「已移走」格视为空）。写入 seeAtk，返回数量。
+   */
+  private collectAttackers(sq: number, byRed: boolean): number {
+    const cells = this.cells;
+    const occ = this.seeOcc;
+    const x = sq % 9;
+    const y = (sq / 9) | 0;
+    const rook = byRed ? Piece.RedRook : Piece.BlackRook;
+    const cannon = byRed ? Piece.RedCannon : Piece.BlackCannon;
+    const knight = byRed ? Piece.RedKnight : Piece.BlackKnight;
+    const pawn = byRed ? Piece.RedPawn : Piece.BlackPawn;
+    let n = 0;
+
+    // 兵/卒：正前一格与过河后的横向两格。
+    if (byRed) {
+      if (y < 9 && cells[sq + 9] === pawn && !occ[sq + 9]) {
+        this.seeAtk[n++] = sq + 9;
+      }
+
+      if (x > 0 && cells[sq - 1] === pawn && !occ[sq - 1] && AREA[sq - 1] !== 3) {
+        this.seeAtk[n++] = sq - 1;
+      }
+
+      if (x < 8 && cells[sq + 1] === pawn && !occ[sq + 1] && AREA[sq + 1] !== 3) {
+        this.seeAtk[n++] = sq + 1;
+      }
+    } else {
+      if (y > 0 && cells[sq - 9] === pawn && !occ[sq - 9]) {
+        this.seeAtk[n++] = sq - 9;
+      }
+
+      if (x > 0 && cells[sq - 1] === pawn && !occ[sq - 1] && AREA[sq - 1] !== 1) {
+        this.seeAtk[n++] = sq - 1;
+      }
+
+      if (x < 8 && cells[sq + 1] === pawn && !occ[sq + 1] && AREA[sq + 1] !== 1) {
+        this.seeAtk[n++] = sq + 1;
+      }
+    }
+
+    // 马：反向蹩马腿（腿格被子实占才蹩；已移走视为空、马激活）。
+    for (let i = 0; i < 8 && n < 16; i++) {
+      const tx = x + KNIGHT_X[i];
+      const ty = y + KNIGHT_Y[i];
+      if (tx < 0 || tx > 8 || ty < 0 || ty > 9) {
+        continue;
+      }
+
+      const tsq = ty * 9 + tx;
+      if (cells[tsq] !== knight || occ[tsq]) {
+        continue;
+      }
+
+      const bx = x + REV_LEG_X[i];
+      const by = y + REV_LEG_Y[i];
+      if (bx < 0 || bx > 8 || by < 0 || by > 9) {
+        continue;
+      }
+
+      const legSq = by * 9 + bx;
+      if (cells[legSq] !== Piece.Empty && !occ[legSq]) {
+        continue;
+      }
+
+      this.seeAtk[n++] = tsq;
+    }
+
+    // 车/炮：四方向扫描（穿过已移走格）；无 xray——遇第一个实占子即停，
+    // 炮需恰一个实占炮架。保守低估防守方，剪枝方向恒为「少剪不误剪」。
+    for (let dir = 0; dir < 4 && n < 16; dir++) {
+      const dx = KING_X[dir];
+      const dy = KING_Y[dir];
+      let tx = x + dx;
+      let ty = y + dy;
+      let screened = false;
+      while (tx >= 0 && tx <= 8 && ty >= 0 && ty <= 9) {
+        const tsq = ty * 9 + tx;
+        const piece = cells[tsq];
+        if (!occ[tsq] && piece !== Piece.Empty) {
+          if (!screened) {
+            if (piece === rook) {
+              this.seeAtk[n++] = tsq;
+            }
+
+            screened = true;
+          } else {
+            if (piece === cannon) {
+              this.seeAtk[n++] = tsq;
+            }
+
+            break;
+          }
+        }
+
+        tx += dx;
+        ty += dy;
+      }
+    }
+
+    return n;
+  }
+
+  /**
+   * 静态交换评估（SEE）：以 firstFrom 的子攻击 to 格的完整交换序列净收益，
+   * 攻方视角（当前走子方），小于 0 表示交换亏损。
+   * 交替递推 + 负极大回溯取双方最优；帅不参战、无 xray（安全侧简化）。
+   */
+  see(to: number, firstFrom: number): number {
+    const cells = this.cells;
+    const occ = this.seeOcc;
+    const gain = this.seeGain;
+    const touched = this.seeTouched;
+    let touchedN = 0;
+    let d = 0;
+
+    // 首攻击者虚拟移走；它吃掉 victim 后占据 to，成为下一轮被吃对象。
+    occ[firstFrom] = 1;
+    touched[touchedN++] = firstFrom;
+    gain[0] = PIECE_VALUE[cells[to]];
+    let onTo = cells[firstFrom];
+
+    // 轮到守方反吃，交替至一方无攻击者。
+    let side = !this.redToMove;
+    for (;;) {
+      if (++d >= 31) {
+        break;
+      }
+
+      const count = this.collectAttackers(to, side);
+      if (count === 0) {
+        break;
+      }
+
+      // 最小价值攻击者先吃（双方都按最优次序）。
+      let best = this.seeAtk[0];
+      let bestVal = PIECE_VALUE[cells[best]];
+      for (let i = 1; i < count; i++) {
+        const v = PIECE_VALUE[cells[this.seeAtk[i]]];
+        if (v < bestVal) {
+          bestVal = v;
+          best = this.seeAtk[i];
+        }
+      }
+
+      gain[d] = PIECE_VALUE[onTo] - gain[d - 1];
+      // 双方继续交换的最优结果均亏损时提前终止（剩余轮次必有一方弃吃）。
+      if (Math.max(-gain[d - 1], gain[d]) < 0) {
+        break;
+      }
+
+      occ[best] = 1;
+      touched[touchedN++] = best;
+      onTo = cells[best];
+      side = !side;
+    }
+
+    while (--d > 0) {
+      gain[d - 1] = -Math.max(-gain[d - 1], gain[d]);
+    }
+
+    for (let i = 0; i < touchedN; i++) {
+      occ[touched[i]] = 0;
+    }
+
+    return gain[0];
   }
 }

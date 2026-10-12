@@ -141,8 +141,11 @@ export class Searcher {
 
     /** 上轮完成层的分值（aspiration 窗口中心）。 */
     let prevScore = 0;
+    /** 上轮完成层的最佳着法（稳定性判据）。 */
+    let prevBestMove = 0;
 
     for (let depth = 1; depth <= maxDepth; depth++) {
+      const iterStart = now();
       // aspiration 窗口：自第 3 层起以上轮分值为中心收窄根窗口，
       // 越界（fail-high/low）时退全窗复搜一次（最多重搜一轮）。
       const windowed = depth >= 3 && Math.abs(prevScore) < MATE_BOUND;
@@ -236,9 +239,14 @@ export class Searcher {
         break;
       }
 
-      // 时间预算：下一层通常至少翻倍耗时，剩余不足则不再加深。
-      const elapsed = now() - start;
-      if (now() > this.deadline || elapsed * 2 > moveTimeMs) {
+      // 时间预算：按本层实耗预估下一层（迭代加深分支因子约 3 倍），
+      // bestMove 与上轮一致视为稳定、系数下调鼓励加深（即使中途作废也
+      // 保留上轮结果无损失）；不稳定时上调系数尽早收敛。
+      const iterElapsed = now() - iterStart;
+      const stable = bestMove === prevBestMove;
+      prevBestMove = bestMove;
+      const estimate = iterElapsed * (stable ? 2 : 3);
+      if (now() > this.deadline || estimate > moveTimeMs - (now() - start)) {
         break;
       }
     }
@@ -463,8 +471,19 @@ export class Searcher {
     let best = stand;
     for (let i = 0; i < count; i++) {
       const move = this.moveBuf[base + i];
+      const victim = pos.cells[moveTo(move)];
       // delta 剪枝：即使吃到该子加上安全边际仍无法超过 alpha，直接跳过。
-      if (stand + PIECE_VALUE[pos.cells[moveTo(move)]] + 100 <= alpha) {
+      if (stand + PIECE_VALUE[victim] + 100 <= alpha) {
+        continue;
+      }
+
+      // SEE 剪枝：大子吃小子且交换净亏（对手有更小攻击者吃回）时跳过展开，
+      // 静态分已含被吃子价值，剪掉后仍以 stand 兜底不丢着法。
+      const attacker = pos.cells[moveFrom(move)];
+      if (
+        PIECE_VALUE[victim] < PIECE_VALUE[attacker] &&
+        pos.see(moveTo(move), moveFrom(move)) < 0
+      ) {
         continue;
       }
 
