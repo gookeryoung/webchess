@@ -1,19 +1,18 @@
-"""webchess NNUE 训练器：WCND 数据 → 32×32 网络 → int8/int16 量化权重导出。
+"""webchess NNUE 训练器：WCND 数据 → 32×32×32 网络 → int8/int16 量化权重导出。
 
 网络结构（浮点训练）：
     视角特征 1260（14 类棋子 × 90 格：己方 0-6 / 对方 7-13，双视角共享权重）
     → l1: 1260→32（双视角各自累加，共享权重与 bias）
-    → concat 64 → cReLU → l2: 64→32 → cReLU → l3: 32→1
+    → concat 64 → cReLU → l2a: 64→32 → cReLU → l2b: 32→32 → cReLU → l3: 32→1
     → 输出 × 400 = 走子方视角 cp。
 
 量化方案（与 TS 推理逐位一致，全部 floor 除法）：
-    QA1=256：W1 int16（clip ±24000 防溢出），acc int16；
+    QA1=256：W1 int16（clip ±24000 防溢出），acc int32；
     a1 = clip(floor((acc*127+128)/256), 0, 127) —— int8 cReLU；
-    W2 int8 = round(w2*64)，h = W2·concat(a1) + B2（int32，B2=round(b2*8128)）；
-    a2 = clip(floor((h*127+4064)/8128), 0, 127)；
-    W3 int8 = round(w3*64)，out = W3·a2 + B3（B3=round(b3*8128)）；
+    W2A/W2B/W3 int8 = round(w×64)，逐层 h = W·a + B（int32，B=round(b×8128)）；
+    各隐层激活 a = clip(floor((h*127+4064)/8128), 0, 127)；
     eval = floor(out*400/8128) cp（走子方视角）。
-    （W2/W3 scale 取 64 而非 128：权重 |max|≈1.3，128 会触发 ±127 clip 截断。）
+    （W 权重 scale 取 64 而非 128：|max|≈1.3，128 会触发 ±127 clip 截断。）
 
 用法（uv run）：
     uv run train.py --data F:/DevCache/nnue-data.bin --epochs 24
@@ -35,8 +34,9 @@ PAD = 1260  # 特征填充下标（embedding 扩一行，权重恒零）
 FEATURES = 1260
 HIDDEN = 32
 QA1 = 256
-SCALE_L2 = 8128  # 127(a1) × 64(W2)
+SCALE_L2 = 8128  # 127(激活) × 64(权重)
 EVAL_SCALE = 400.0
+WCNW_VERSION = 2
 
 
 def parse_args() -> argparse.Namespace:
@@ -103,14 +103,16 @@ class NnueNet(nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.l1 = nn.Linear(FEATURES, HIDDEN)
-        self.l2 = nn.Linear(HIDDEN * 2, HIDDEN)
+        self.l2a = nn.Linear(HIDDEN * 2, HIDDEN)
+        self.l2b = nn.Linear(HIDDEN, HIDDEN)
         self.l3 = nn.Linear(HIDDEN, 1)
 
     def forward(self, my: torch.Tensor, opp: torch.Tensor) -> torch.Tensor:
         acc_my = self._accumulate(my)
         acc_opp = self._accumulate(opp)
         x = torch.clamp(torch.cat([acc_my, acc_opp], dim=1), 0.0, 1.0)
-        x = torch.clamp(self.l2(x), 0.0, 1.0)
+        x = torch.clamp(self.l2a(x), 0.0, 1.0)
+        x = torch.clamp(self.l2b(x), 0.0, 1.0)
         return self.l3(x)
 
     def _accumulate(self, idx: torch.Tensor) -> torch.Tensor:
@@ -125,15 +127,19 @@ def quantize(model: NnueNet) -> dict[str, np.ndarray]:
     w1 = model.l1.weight.detach().numpy().T  # (1260, 32)
     w1q = np.clip(np.round(w1 * QA1), -24000, 24000).astype(np.int16)
     b1q = np.round(model.l1.bias.detach().numpy() * QA1).astype(np.int16)
-    w2q = np.clip(np.round(model.l2.weight.detach().numpy() * 64), -127, 127).astype(np.int8)
-    b2q = np.round(model.l2.bias.detach().numpy() * SCALE_L2).astype(np.int32)
+    w2aq = np.clip(np.round(model.l2a.weight.detach().numpy() * 64), -127, 127).astype(np.int8)
+    b2aq = np.round(model.l2a.bias.detach().numpy() * SCALE_L2).astype(np.int32)
+    w2bq = np.clip(np.round(model.l2b.weight.detach().numpy() * 64), -127, 127).astype(np.int8)
+    b2bq = np.round(model.l2b.bias.detach().numpy() * SCALE_L2).astype(np.int32)
     w3q = np.clip(np.round(model.l3.weight.detach().numpy() * 64), -127, 127).astype(np.int8)
     b3q = np.round(model.l3.bias.detach().numpy() * SCALE_L2).astype(np.int32)
     return {
         "w1": w1q,
         "b1": b1q,
-        "w2": w2q,
-        "b2": b2q,
+        "w2a": w2aq,
+        "b2a": b2aq,
+        "w2b": w2bq,
+        "b2b": b2bq,
         "w3": w3q,
         "b3": b3q,
     }
@@ -150,9 +156,11 @@ def quant_forward(q: dict[str, np.ndarray], my: np.ndarray, opp: np.ndarray) -> 
     a1_my = np.clip((acc_my * 127 + 128) // 256, 0, 127).astype(np.int64)
     a1_opp = np.clip((acc_opp * 127 + 128) // 256, 0, 127).astype(np.int64)
     a1 = np.concatenate([a1_my, a1_opp], axis=1)  # (n, 64)
-    h = a1 @ q["w2"].T.astype(np.int64) + q["b2"].astype(np.int64)
-    a2 = np.clip((h * 127 + 4064) // SCALE_L2, 0, 127).astype(np.int64)
-    out = a2 @ q["w3"].T.astype(np.int64) + q["b3"].astype(np.int64)
+    h1 = a1 @ q["w2a"].T.astype(np.int64) + q["b2a"].astype(np.int64)
+    a2 = np.clip((h1 * 127 + 4064) // SCALE_L2, 0, 127).astype(np.int64)
+    h2 = a2 @ q["w2b"].T.astype(np.int64) + q["b2b"].astype(np.int64)
+    a3 = np.clip((h2 * 127 + 4064) // SCALE_L2, 0, 127).astype(np.int64)
+    out = a3 @ q["w3"].T.astype(np.int64) + q["b3"].astype(np.int64)
     return (out * 400 // SCALE_L2).astype(np.int32)  # floor 语义（out*400 可负）
 
 
@@ -161,13 +169,22 @@ def export_weights(q: dict[str, np.ndarray], path: str) -> None:
     header = struct.pack(
         "<4sIIII",
         b"WCNW",
-        1,
+        WCNW_VERSION,
         FEATURES,
         HIDDEN,
         QA1,
     )
     parts = [header]
-    for name, dt in (("w1", "<i2"), ("b1", "<i2"), ("w2", "i1"), ("b2", "<i4"), ("w3", "i1"), ("b3", "<i4")):
+    for name, dt in (
+        ("w1", "<i2"),
+        ("b1", "<i2"),
+        ("w2a", "i1"),
+        ("b2a", "<i4"),
+        ("w2b", "i1"),
+        ("b2b", "<i4"),
+        ("w3", "i1"),
+        ("b3", "<i4"),
+    ):
         arr = np.ascontiguousarray(q[name], dtype=dt)
         parts.append(arr.tobytes())
 

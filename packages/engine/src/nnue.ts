@@ -7,12 +7,14 @@ import { Piece } from '@webchess/core';
  * 1. 视角特征：14 类棋子 × 90 格 = 1260（红视角红子 class 0-6 / 黑子 7-13；
  *    黑视角黑子 0-6 / 红子 7-13，格行镜像）；
  * 2. l1: 1260→32 双视角共享权重，各自累加（增量维护的 int32 accumulator）；
- * 3. concat 64 → cReLU（量化域 [0,127]）→ l2: 64→32 → cReLU → l3: 32→1；
- * 4. eval = floor(out × 400 / 16256)，走子方视角 cp。
+ * 3. concat 64 → cReLU（量化域 [0,127]）→ l2a: 64→32 → cReLU →
+ *    l2b: 32→32 → cReLU → l3: 32→1；
+ * 4. eval = floor(out × 400 / 8128)，走子方视角 cp。
  *
- * 权重文件（WCNW 二进制，由 trainer/train.py 导出）：
+ * 权重文件（WCNW 二进制 v2，由 trainer/train.py 导出）：
  *   头 20 字节（magic "WCNW" + u32 version + u32 features + u32 hidden + u32 qa1）
- *   W1 int16[1260×32]、B1 int16[32]、W2 int8[64×32]、B2 int32[32]、W3 int8[32]、B3 int32[1]。
+ *   W1 int16[1260×32]、B1 int16[32]、W2A int8[64×32]、B2A int32[32]、
+ *   W2B int8[32×32]、B2B int32[32]、W3 int8[32]、B3 int32[1]。
  *
  * 增量维护：FastPosition 在 make/unmake 时调用 pushMove/popMove，
  * 对两个视角 accumulator 做 W1 列向量的加/减（每次 ≤3 特征 × 2 视角 × 32 列）。
@@ -40,9 +42,12 @@ interface NnueWeights {
   /** l1 权重（int16 已展开为 int32：[特征 (1260+1)×32]，末行为 PAD 恒零列）。 */
   w1: Int32Array;
   b1: Int32Array;
-  /** l2 权重与 bias（[64×32] / [32]）。 */
+  /** l2a 权重与 bias（[64×32] / [32]，行主序 [输出][输入]）。 */
   w2: Int8Array;
   b2: Int32Array;
+  /** l2b 权重与 bias（[32×32] / [32]，行主序 [输出][输入]）。 */
+  w2b: Int8Array;
+  b2b: Int32Array;
   /** 输出层权重与 bias（[32] / [1]）。 */
   w3: Int8Array;
   b3: Int32Array;
@@ -105,17 +110,22 @@ export function loadNnueWeights(data: ArrayBuffer): boolean {
     off += HIDDEN * 2 * HIDDEN;
     const b2 = sliceInt32(view, off, HIDDEN);
     off += HIDDEN * 4;
+    const w2b = sliceInt8(view, off, HIDDEN * HIDDEN);
+    off += HIDDEN * HIDDEN;
+    const b2b = sliceInt32(view, off, HIDDEN);
+    off += HIDDEN * 4;
     const w3 = sliceInt8(view, off, HIDDEN);
     off += HIDDEN;
     const b3 = sliceInt32(view, off, 1);
-    if (off + 4 > data.byteLength) {
+    off += 4;
+    if (off > data.byteLength) {
       return false;
     }
 
     // l1 权重扩一行零（特征下标 1260 = PAD，恒零列）。
     const w1 = new Int32Array((FEATURES + 1) * HIDDEN);
     w1.set(w1i16);
-    weights = { w1, b1, w2, b2, w3, b3 };
+    weights = { w1, b1, w2, b2, w2b, b2b, w3, b3 };
     return true;
   } catch {
     return false;
@@ -134,9 +144,10 @@ export function nnueReady(): boolean {
  */
 export class NnueAccumulator {
   private readonly acc = new Int32Array(HIDDEN * 2);
-  /** a1/a2 激活缓冲（evaluate 复用，避免叶子节点分配）。 */
+  /** a1/a2/a3 激活缓冲（evaluate 复用，避免叶子节点分配）。 */
   private readonly a1 = new Int32Array(HIDDEN * 2);
   private readonly a2 = new Int32Array(HIDDEN);
+  private readonly a3 = new Int32Array(HIDDEN);
   private readonly undoStack = new Int32Array(128 * HIDDEN * 2);
 
   /** 从棋盘全量重建（O(32 子 × 2 视角)，setFromBoard 后调用）。 */
@@ -222,7 +233,7 @@ export class NnueAccumulator {
       return 0;
     }
 
-    const { w2, b2, w3, b3 } = weights;
+    const { w2, b2, w2b, b2b, w3, b3 } = weights;
     const acc = this.acc;
     const a1 = this.a1;
     // cReLU：量化域 [0,127]，floor 语义与 Python 一致。
@@ -236,7 +247,7 @@ export class NnueAccumulator {
       a1[HIDDEN + i] = v < 0 ? 0 : v > 127 ? 127 : v;
     }
 
-    // l2: concat 64 → 32（w2 布局为 [输出 32][输入 64] 行主序，与导出一致）。
+    // l2a: concat 64 → 32（w2 布局为 [输出 32][输入 64] 行主序，与导出一致）。
     const a2 = this.a2;
     for (let j = 0; j < HIDDEN; j++) {
       let h = b2[j];
@@ -249,9 +260,22 @@ export class NnueAccumulator {
       a2[j] = v < 0 ? 0 : v > 127 ? 127 : v;
     }
 
+    // l2b: 32 → 32（w2b 布局 [输出 32][输入 32] 行主序）。
+    const a3 = this.a3;
+    for (let j = 0; j < HIDDEN; j++) {
+      let h = b2b[j];
+      const row = j * HIDDEN;
+      for (let i = 0; i < HIDDEN; i++) {
+        h += w2b[row + i] * a2[i];
+      }
+
+      const v = Math.floor((h * 127 + 4064) / SCALE_OUT);
+      a3[j] = v < 0 ? 0 : v > 127 ? 127 : v;
+    }
+
     let out = b3[0];
     for (let i = 0; i < HIDDEN; i++) {
-      out += w3[i] * a2[i];
+      out += w3[i] * a3[i];
     }
 
     return Math.floor((out * 400) / SCALE_OUT);
