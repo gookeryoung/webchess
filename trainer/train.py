@@ -194,6 +194,9 @@ def main() -> None:
     device = torch.device("cpu")
     model = NnueNet().to(device)
     ckpt_path = Path(args.ckpt)
+    if args.export_only:
+        model.load_state_dict(torch.load(ckpt_path, weights_only=True))
+        print(f"export-only：加载 checkpoint {ckpt_path}")
 
     if not args.export_only:
         opt = torch.optim.Adam(model.parameters(), lr=args.lr)
@@ -255,7 +258,7 @@ def main() -> None:
             * EVAL_SCALE
         )
 
-    q_pred = quant_forward(q, my[val_idx], opp[val_idx]).astype(np.float64)
+    q_pred = quant_forward(q, my[val_idx], opp[val_idx]).reshape(-1).astype(np.float64)
     delta = q_pred - f_pred
     print(
         f"量化偏差：mean {delta.mean():.1f} cp，p99 {np.percentile(np.abs(delta), 99):.0f} cp，"
