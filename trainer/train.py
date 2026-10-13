@@ -9,10 +9,11 @@
 量化方案（与 TS 推理逐位一致，全部 floor 除法）：
     QA1=256：W1 int16（clip ±24000 防溢出），acc int16；
     a1 = clip(floor((acc*127+128)/256), 0, 127) —— int8 cReLU；
-    W2 int8 = round(w2*128)，h = W2·concat(a1) + B2（int32，B2=round(b2*16256)）；
-    a2 = clip(floor((h*127+8128)/16256), 0, 127)；
-    W3 int8 = round(w3*128)，out = W3·a2 + B3（B3=round(b3*16256)）；
-    eval = floor(out*400/16256) cp（走子方视角）。
+    W2 int8 = round(w2*64)，h = W2·concat(a1) + B2（int32，B2=round(b2*8128)）；
+    a2 = clip(floor((h*127+4064)/8128), 0, 127)；
+    W3 int8 = round(w3*64)，out = W3·a2 + B3（B3=round(b3*8128)）；
+    eval = floor(out*400/8128) cp（走子方视角）。
+    （W2/W3 scale 取 64 而非 128：权重 |max|≈1.3，128 会触发 ±127 clip 截断。）
 
 用法（uv run）：
     uv run train.py --data F:/DevCache/nnue-data.bin --epochs 24
@@ -34,7 +35,7 @@ PAD = 1260  # 特征填充下标（embedding 扩一行，权重恒零）
 FEATURES = 1260
 HIDDEN = 32
 QA1 = 256
-SCALE_L2 = 16256  # 127(a1) × 128(W2)
+SCALE_L2 = 8128  # 127(a1) × 64(W2)
 EVAL_SCALE = 400.0
 
 
@@ -124,9 +125,9 @@ def quantize(model: NnueNet) -> dict[str, np.ndarray]:
     w1 = model.l1.weight.detach().numpy().T  # (1260, 32)
     w1q = np.clip(np.round(w1 * QA1), -24000, 24000).astype(np.int16)
     b1q = np.round(model.l1.bias.detach().numpy() * QA1).astype(np.int16)
-    w2q = np.clip(np.round(model.l2.weight.detach().numpy() * 128), -127, 127).astype(np.int8)
+    w2q = np.clip(np.round(model.l2.weight.detach().numpy() * 64), -127, 127).astype(np.int8)
     b2q = np.round(model.l2.bias.detach().numpy() * SCALE_L2).astype(np.int32)
-    w3q = np.clip(np.round(model.l3.weight.detach().numpy() * 128), -127, 127).astype(np.int8)
+    w3q = np.clip(np.round(model.l3.weight.detach().numpy() * 64), -127, 127).astype(np.int8)
     b3q = np.round(model.l3.bias.detach().numpy() * SCALE_L2).astype(np.int32)
     return {
         "w1": w1q,
@@ -150,7 +151,7 @@ def quant_forward(q: dict[str, np.ndarray], my: np.ndarray, opp: np.ndarray) -> 
     a1_opp = np.clip((acc_opp * 127 + 128) // 256, 0, 127).astype(np.int64)
     a1 = np.concatenate([a1_my, a1_opp], axis=1)  # (n, 64)
     h = a1 @ q["w2"].T.astype(np.int64) + q["b2"].astype(np.int64)
-    a2 = np.clip((h * 127 + 8128) // SCALE_L2, 0, 127).astype(np.int64)
+    a2 = np.clip((h * 127 + 4064) // SCALE_L2, 0, 127).astype(np.int64)
     out = a2 @ q["w3"].T.astype(np.int64) + q["b3"].astype(np.int64)
     return (out * 400 // SCALE_L2).astype(np.int32)  # floor 语义（out*400 可负）
 

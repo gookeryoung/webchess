@@ -22,8 +22,8 @@ import { Piece } from '@webchess/core';
 const FEATURES = 1260;
 /** 隐层宽度。 */
 const HIDDEN = 32;
-/** 输出层缩放分母（a1 量化 127 × W2/W3 权重量化 128）。 */
-const SCALE_OUT = 16256;
+/** 输出层缩放分母（a1 量化 127 × W2/W3 权重量化 64）。 */
+const SCALE_OUT = 8128;
 
 /** 黑视角棋子类别：黑子（8-14）→ 0-6，红子（1-7）→ 7-13。 */
 function blackViewClass(piece: number): number {
@@ -245,7 +245,7 @@ export class NnueAccumulator {
         h += w2[row + i] * a1[i];
       }
 
-      const v = Math.floor((h * 127 + 8128) / SCALE_OUT);
+      const v = Math.floor((h * 127 + 4064) / SCALE_OUT);
       a2[j] = v < 0 ? 0 : v > 127 ? 127 : v;
     }
 
