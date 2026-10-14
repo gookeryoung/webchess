@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { Board, Piece } from '@webchess/core';
+import { Board, Piece, Rule } from '@webchess/core';
 import { FastPosition } from '../fastBoard.js';
 import { Searcher } from '../index.js';
 import {
@@ -47,6 +47,28 @@ describe('NNUE 推理', () => {
     // 显式关闭 NNUE 时必须落到手工评估，而不是「兜底 FastPosition 默认开 NNUE」
     expect(new Searcher({ wasm: false, nnue: false }).backend).toBe('ts');
     expect(new Searcher({ nnue: false }).backend).toBe('ts');
+  });
+
+  it('懒评估开启后仍能命中一步杀（战术正确性不被近似剪枝破坏）', () => {
+    // 重炮杀：e7e8 为唯一解（与 engine.test / 题库 mate1-chongpao 同源局面）。
+    const board = Board.fromFen('3aka3/4c4/4R4/4C4/9/2p6/9/9/4C4/3K5 w - - 0 1');
+    for (const margin of [0, 200, 600]) {
+      const searcher = new Searcher({ wasm: false, lazyNnueMargin: margin });
+      const outcome = searcher.search(board, { maxDepth: 4, moveTimeMs: 3000 });
+      expect(outcome.bestMove?.toUcci(), `margin=${margin}`).toBe('e7e8');
+      expect(outcome.score, `margin=${margin}`).toBeGreaterThan(90000);
+    }
+  });
+
+  it('懒评估对普通局面仍返回合法着法', () => {
+    const board = new Board();
+    const searcher = new Searcher({ wasm: false, lazyNnueMargin: 400 });
+    const outcome = searcher.search(board, { maxDepth: 4, moveTimeMs: 2000 });
+    expect(outcome.bestMove).not.toBeNull();
+    const legal = new Set(
+      Rule.getAllLegalMoves(board, board.redToMove).map((m) => m.toUcci()),
+    );
+    expect(legal.has(outcome.bestMove!.toUcci())).toBe(true);
   });
 
   it('与 PyTorch 量化模拟逐位一致（64 条向量）', () => {

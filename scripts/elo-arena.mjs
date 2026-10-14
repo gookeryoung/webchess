@@ -15,6 +15,7 @@
  *   --wasm-a / --wasm-b  对应方启用 WASM 内核（须能读到 wasm 产物），
  *                        同参数对比即测 WASM 加速比（NPS）与行为一致性。
  *   --nnue-a / --nnue-b  对应方启用 NNUE 评估（须能读到权重产物；该方强制纯 TS 后端）。
+ *   --lazy-a / --lazy-b  对应方启用懒评估边际（cp，0=关闭；须配合 --nnue-x）。
  *   --legacy-engine X    A 方外挂旧参数引擎 bundle（Texel 调参 A/B 基线，
  *                        由 git show HEAD 的 engine src 另行打包）。
  *
@@ -39,6 +40,8 @@ function parseArgs(argv) {
     wasmB: false,
     nnueA: false,
     nnueB: false,
+    lazyA: 0,
+    lazyB: 0,
     legacyEngine: null,
   };
   for (let i = 2; i < argv.length; i++) {
@@ -83,6 +86,8 @@ function parseArgs(argv) {
     else if (key === '--depth-b') args.depthB = value;
     else if (key === '--time-a') args.timeA = value;
     else if (key === '--time-b') args.timeB = value;
+    else if (key === '--lazy-a') args.lazyA = value;
+    else if (key === '--lazy-b') args.lazyB = value;
     else throw new Error(`未知参数 ${key}`);
   }
   return args;
@@ -224,8 +229,8 @@ const paramsB = { maxDepth: args.depthB, moveTimeMs: args.timeB };
 // --wasm-x 侧走自动获取，--nnue-x 侧强制纯 TS + NNUE 评估。
 const tsOnly = { wasm: false, nnue: false };
 const nnueOptions = { wasm: false, nnue: true };
-const optionsA = args.nnueA ? nnueOptions : args.wasmA ? undefined : tsOnly;
-const optionsB = args.nnueB ? nnueOptions : args.wasmB ? undefined : tsOnly;
+const optionsA = args.nnueA ? { ...nnueOptions, lazyNnueMargin: args.lazyA } : args.wasmA ? undefined : tsOnly;
+const optionsB = args.nnueB ? { ...nnueOptions, lazyNnueMargin: args.lazyB } : args.wasmB ? undefined : tsOnly;
 // --legacy-engine：A 方换用外挂旧参数引擎（纯 TS，无 wasm 接入）。
 let legacySearcher = null;
 if (args.legacyEngine) {
@@ -241,15 +246,16 @@ const searcherA = legacySearcher
   : new Searcher({ ...legacyOptions, ...optionsA });
 const searcherB = new Searcher(optionsB);
 
-/** 后端标签（nnue > wasm > ts）。 */
-function backendLabel(nnue, wasm) {
-  return nnue ? 'nnue' : wasm ? 'wasm' : 'ts';
+/** 后端标签（nnue > wasm > ts），附懒评估边际。 */
+function backendLabel(nnue, wasm, lazy) {
+  const base = nnue ? 'nnue' : wasm ? 'wasm' : 'ts';
+  return lazy > 0 ? `${base}+lazy${lazy}` : base;
 }
 
 console.log(
   `--- 自对弈竞技场：A(depth=${args.depthA}, ${args.timeA}ms, ` +
-    `${legacySearcher ? 'legacy参数' : backendLabel(args.nnueA, args.wasmA)}) vs ` +
-    `B(depth=${args.depthB}, ${args.timeB}ms, ${backendLabel(args.nnueB, args.wasmB)})，` +
+    `${legacySearcher ? 'legacy参数' : backendLabel(args.nnueA, args.wasmA, args.lazyA)}) vs ` +
+    `B(depth=${args.depthB}, ${args.timeB}ms, ${backendLabel(args.nnueB, args.wasmB, args.lazyB)})，` +
     `共 ${args.games} 局${args.legacy ? '（legacy 特性）' : ''} ---`,
 );
 

@@ -88,6 +88,13 @@ export interface SearcherOptions {
    * 显式 false 回退手工评估（可配合 WASM 后端，A/B 基线用）。
    */
   nnue?: boolean;
+  /**
+   * 懒评估边际（cp，默认 0 = 关闭）。主搜索叶入口先用增量静态分（材料 + PST，O(1)）
+   * 与窗口比较，明显超出 ±margin 时跳过 NNUE 前向——实测 NNUE 前向约 2.4µs/叶，
+   * 而增量静态分 <0.1µs，是搜索的最大单项开销（约 2/3 的节点耗时）。
+   * 该策略属近似剪枝，默认关闭，须经 A/B 强度验证后再启用。
+   */
+  lazyNnueMargin?: number;
 }
 
 /** 搜索统计（供 UI 显示与测试断言）。 */
@@ -160,6 +167,8 @@ export class Searcher {
     countermove: true,
     captureHistory: true,
     mateDistance: true,
+    /** 懒评估边际（0 = 关闭）。 */
+    lazyNnueMargin: 0,
   };
 
   constructor(options?: SearcherOptions) {
@@ -650,11 +659,16 @@ export class Searcher {
     this.nodes++;
 
     const pos = this.pos;
-    const stand = full
-      ? pos.evaluateFull()
-      : pos.redToMove
-        ? pos.baseScore
-        : -pos.baseScore;
+    const cheap = pos.redToMove ? pos.baseScore : -pos.baseScore;
+    // 懒评估：主搜索叶入口先用 O(1) 增量静态分试探窗口，明显超出即跳过 NNUE 前向；
+    // 其余节点（quiescence 递归）本就只用增量静态分。
+    const margin = this.opt.lazyNnueMargin;
+    const stand =
+      full && margin > 0 && (cheap >= beta + margin || cheap <= alpha - margin)
+        ? cheap
+        : full
+          ? pos.evaluateFull()
+          : cheap;
     if (ply >= MAX_PLY - 2) {
       return stand;
     }
