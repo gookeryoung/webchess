@@ -8,7 +8,28 @@ import { asWorkerScope, WorkerRequest, WorkerResponse } from './protocol.js';
  *
  * WASM 内核与 NNUE 权重预加载：均须在实例化引擎前完成（Searcher 构造时定型后端）；
  * 任一加载失败（网络异常 / 环境不支持）静默回退（纯 TS 内核 / 手工评估），不影响功能。
+ *
+ * 关键约束：下面两段预加载使用顶层 await，模块求值会在此处挂起，而挂起期间 Worker
+ * 的事件循环照常派发消息任务——此时若还没注册 message 监听，消息就会被直接丢弃
+ * （实测：Chromium 不会在模块求值完成后补投）。客户端 start() 发出的首个 ping 恰好
+ * 落在这一窗口内，ping 一丢 ack 就永远不来，`await engine.start()` 永久挂起，
+ * 界面因此完全挂不上（表现为白屏且控制台无任何报错）。
+ * 所以监听必须在任何 await 之前注册：未就绪期间的请求先进队列，引擎建好后按序回放。
  */
+const scope = asWorkerScope();
+const pendingRequests: WorkerRequest[] = [];
+let handleRequest: ((request: WorkerRequest) => void) | null = null;
+
+scope.addEventListener('message', (event) => {
+  const request = event.data as WorkerRequest;
+  if (handleRequest === null) {
+    pendingRequests.push(request);
+    return;
+  }
+
+  handleRequest(request);
+});
+
 try {
   const response = await fetch(wasmUrl);
   if (response.ok) {
@@ -28,16 +49,13 @@ try {
 }
 
 const engine = new BuiltinEngine();
-const scope = asWorkerScope();
+let currentId = 0;
 
 engine.onInfo((info) => {
   scope.postMessage({ id: currentId, type: 'info', info });
 });
 
-let currentId = 0;
-
-scope.addEventListener('message', (event) => {
-  const request = event.data as WorkerRequest;
+const processRequest = (request: WorkerRequest): void => {
   currentId = request.id;
 
   const reply = (message: WorkerResponse) => scope.postMessage(message);
@@ -73,4 +91,11 @@ scope.addEventListener('message', (event) => {
   }
 
   reply({ id: currentId, type: 'error', message: '未知请求类型' });
-});
+};
+
+handleRequest = processRequest;
+
+// 回放预加载期间到达的请求（严格保持到达顺序，例如 ping 必须先于 go 被应答）。
+for (const request of pendingRequests.splice(0)) {
+  processRequest(request);
+}

@@ -12,6 +12,13 @@ import { WorkerRequest, WorkerResponse } from './protocol.js';
 type DistributiveOmit<T, K extends keyof never> = T extends unknown ? Omit<T, K> : never;
 
 /**
+ * 握手超时（毫秒）。Worker 在实例化引擎前要预加载 WASM 内核与 NNUE 权重，
+ * 该阶段若卡住或 Worker 根本没起来，没有超时就会永久挂起——上层
+ * 「引擎不可用则降级双人模式」的分支便永远等不到，界面也就永远挂不上。
+ */
+const HANDSHAKE_TIMEOUT_MS = 10_000;
+
+/**
  * 引擎 Worker 客户端：把 postMessage 通道包装为内核的 EngineSession 契约。
  * 上层（GameSession）完全不感知引擎跑在 Worker 还是本地线程。
  */
@@ -45,7 +52,7 @@ export class WorkerEngineClient implements EngineSession {
   }
 
   async start(): Promise<void> {
-    await this.send({ type: 'ping' });
+    await this.send({ type: 'ping' }, HANDSHAKE_TIMEOUT_MS);
     this.isReady = true;
   }
 
@@ -104,10 +111,36 @@ export class WorkerEngineClient implements EngineSession {
 
   private send(
     request: DistributiveOmit<WorkerRequest, 'id'> & { id?: number },
+    timeoutMs?: number,
   ): Promise<unknown> {
     const id = request.id ?? this.nextId++;
     return new Promise<unknown>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const clearTimer = (): void => {
+        if (timer !== null) {
+          clearTimeout(timer);
+        }
+      };
+      const entry = {
+        resolve: (value: unknown): void => {
+          clearTimer();
+          resolve(value);
+        },
+        reject: (reason: Error): void => {
+          clearTimer();
+          reject(reason);
+        },
+      };
+
+      if (timeoutMs !== undefined) {
+        timer = setTimeout(() => {
+          // 先摘除待办项：超时后迟到的 ack/result 会被 settle/fail 忽略，不会二次结算。
+          this.pending.delete(id);
+          entry.reject(new Error(`引擎 Worker 握手超时（${timeoutMs} ms）`));
+        }, timeoutMs);
+      }
+
+      this.pending.set(id, entry);
       this.post({ ...request, id } as WorkerRequest);
     });
   }
