@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Board, Piece } from '@webchess/core';
 import { FastPosition } from '../fastBoard.js';
+import { Searcher } from '../index.js';
 import {
   NnueAccumulator,
   loadNnueWeights,
@@ -26,6 +27,26 @@ describe('NNUE 推理', () => {
     );
     expect(loadNnueWeights(buf)).toBe(true);
     expect(nnueReady()).toBe(true);
+  });
+
+  it('接受 ArrayBufferView 入参（Node Buffer / 带偏移视图）', () => {
+    // 回归：只接受 ArrayBuffer 时，Node 侧 readFileSync 的 Buffer 直传会静默
+    // 加载失败，导致「NNUE 已加载」却是手工评估——曾使开局棋力诊断结论失真。
+    const padded = new Uint8Array(weightsBytes.byteLength + 8);
+    padded.set(weightsBytes, 4);
+    const view = padded.subarray(4);
+    expect(view.byteOffset).toBe(4);
+    expect(loadNnueWeights(view)).toBe(true);
+    expect(nnueReady()).toBe(true);
+  });
+
+  it('Searcher 后端定型：NNUE 优先，nnue:false 真正回退纯 TS', () => {
+    expect(nnueReady()).toBe(true);
+    // 纯 TS + NNUE（默认）
+    expect(new Searcher({ wasm: false }).backend).toBe('nnue');
+    // 显式关闭 NNUE 时必须落到手工评估，而不是「兜底 FastPosition 默认开 NNUE」
+    expect(new Searcher({ wasm: false, nnue: false }).backend).toBe('ts');
+    expect(new Searcher({ nnue: false }).backend).toBe('ts');
   });
 
   it('与 PyTorch 量化模拟逐位一致（64 条向量）', () => {

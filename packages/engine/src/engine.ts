@@ -199,8 +199,12 @@ export class BuiltinEngine implements EngineSession {
   }
 
   /**
-   * MultiPV：先以浅层搜索给全部根着法预评分（避免只按吃子分挑选而漏掉
-   * 安静的强着法），取前 N 路再做完整搜索并逐路汇报。
+   * MultiPV：逐路全宽搜索——每次完整搜索取当前最佳着，随后从根节点剔除该着
+   * 再搜下一路，因而得到的是真正的「第 N 佳着」并按分值降序。
+   *
+   * 旧实现先用「深度 ≤ 2 的浅层预评分」挑候选再深搜，浅层噪声会让真正的强着
+   * 根本不进入候选（实测起始局面漏掉中炮、选出 h2g2/h2h3 之类软着）。
+   * 逐路搜索同时也让分析 / 提示（hint）用上真正的第 2、3 佳着。
    */
   private searchMultiPv(
     board: Board,
@@ -209,59 +213,49 @@ export class BuiltinEngine implements EngineSession {
     moveTimeMs: number,
     cancelled: () => boolean,
   ): SearchResult {
-    const rootMoves = Rule.getAllLegalMoves(board, board.redToMove);
-    if (rootMoves.length === 0) {
+    const legalCount = Rule.getAllLegalMoves(board, board.redToMove).length;
+    if (legalCount === 0) {
       return { bestMove: null, ponderMove: null, source: 'search' };
     }
 
-    // 阶段一：浅层预评分（depth ≤ 2，每着短时限，通常几毫秒即完成）。
-    const shallowDepth = Math.max(1, Math.min(2, depth - 1));
-    const scored = rootMoves.map((move) => {
-      const child = board.clone();
-      child.doMove(move);
-      const outcome = this.searcher.search(child, {
-        maxDepth: shallowDepth,
-        moveTimeMs: 50,
-        cancelled,
-      });
-      return { move, score: -outcome.score };
-    });
-    scored.sort((a, b) => b.score - a.score);
-    const chosen = scored.slice(0, multiPv);
-
-    // 阶段二：对前 N 路完整搜索，时限均分并夹在上下限之间。
+    const rounds = Math.min(multiPv, legalCount);
+    // 总时限按路数均分并夹在上下限之间；逐路搜索共享置换表，后续路数更快。
     const perMoveMs = Math.max(
       MULTIPV_TIME_MIN,
-      Math.min(MULTIPV_TIME_MAX, Math.floor(moveTimeMs / chosen.length)),
+      Math.min(MULTIPV_TIME_MAX, Math.floor(moveTimeMs / rounds)),
     );
+
+    const excluded: string[] = [];
     let bestUcci: string | null = null;
     let bestScore = -Infinity;
-    let index = 1;
 
-    for (const { move } of chosen) {
-      const child = board.clone();
-      child.doMove(move);
-      const outcome = this.searcher.search(child, {
-        maxDepth: Math.max(1, depth - 1),
+    for (let index = 1; index <= rounds; index++) {
+      const outcome = this.searcher.search(board, {
+        maxDepth: depth,
         moveTimeMs: perMoveMs,
         cancelled,
+        rootExclude: excluded,
       });
-      const score = -outcome.score;
-      const pv = [move.toUcci(), ...outcome.pv.map((m) => m.toUcci())];
 
+      if (outcome.bestMove === null) {
+        break;
+      }
+
+      const ucci = outcome.bestMove.toUcci();
+      excluded.push(ucci);
       this.infoEmitter.emit({
-        index: index++,
-        depth: Math.min(outcome.stats.depth + 1, depth),
-        scoreCp: Math.round(score),
-        isMate: Math.abs(score) > 90000,
+        index,
+        depth: Math.min(outcome.stats.depth, depth),
+        scoreCp: Math.round(outcome.score),
+        isMate: Math.abs(outcome.score) > 90000,
         upperBound: false,
         lowerBound: false,
-        pv,
+        pv: outcome.pv.map((m) => m.toUcci()),
       });
 
-      if (score > bestScore) {
-        bestScore = score;
-        bestUcci = move.toUcci();
+      if (outcome.score > bestScore) {
+        bestScore = outcome.score;
+        bestUcci = ucci;
       }
     }
 

@@ -176,4 +176,34 @@ describe('Searcher — 棋力强化回归', () => {
     expect(outcome.bestMove).toBeInstanceOf(Move);
     expect(outcome.stats.elapsedMs).toBeLessThan(2500);
   });
+
+  it('rootExclude 剔除指定根着法：返回不同的次佳着', () => {
+    const board = new Board();
+    const searcher = new Searcher();
+    const first = searcher.search(board, { maxDepth: 4, moveTimeMs: 3000 });
+    expect(first.bestMove).not.toBeNull();
+    const best = first.bestMove!.toUcci();
+
+    const second = searcher.search(board, {
+      maxDepth: 4,
+      moveTimeMs: 3000,
+      rootExclude: [best],
+    });
+    expect(second.bestMove).not.toBeNull();
+    expect(second.bestMove!.toUcci()).not.toBe(best);
+    // 剔除最佳着后分值不应高于原最佳着。
+    expect(second.score).toBeLessThanOrEqual(first.score);
+  });
+
+  it('rootExclude 排除全部合法着法时返回 null', () => {
+    // 单车对孤将：合法着法有限，全部排除后根节点无候选。
+    const board = Board.fromFen('4k4/9/9/9/9/9/9/9/R8/4K4 w - - 0 1');
+    const all = Rule.getAllLegalMoves(board, true).map((m) => m.toUcci());
+    const outcome = new Searcher().search(board, {
+      maxDepth: 2,
+      moveTimeMs: 1000,
+      rootExclude: all,
+    });
+    expect(outcome.bestMove).toBeNull();
+  });
 });

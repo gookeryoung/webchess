@@ -12,6 +12,10 @@ import { Board, Fen, Move, Rule } from '@webchess/core';
  *
  * 用法：引擎在「非分析模式（MultiPV = 1）且未显式禁用」时，用当前局面键查表，
  * 命中即瞬时出库着法。
+ *
+ * 为什么必须是人工理论线：实测本引擎（含 NNUE）在起始局面 depth 10 仍会选出
+ * `h2h3`/`h2g2`/`b2g2` 等软着，黑方应手同样漂移（`b7b6`/`h7h3`/`b7g7`）。
+ * 开局阶段靠的开局库而非搜索——因此库的**覆盖面**直接决定人机对局开局质量。
  */
 
 /** 开局变例：name 为中文布局名，moves 为从起始局面出发的 UCCI 着法序列。 */
@@ -33,11 +37,13 @@ export interface BookMove {
 }
 
 /**
- * 主流布局变例（覆盖中炮对屏风马/反宫马/单提马、顺炮/列炮、仙人指路、
- * 飞相局、起马局、过宫炮、士角炮等）。全部经 book.test.ts 逐着重放校验。
+ * 主流布局变例（覆盖中炮对屏风马/反宫马/单提马/士角炮、顺炮/列炮、仙人指路、
+ * 飞相局、起马局、过宫炮等）。红方 5 种主流首着各有多个分支，
+ * 并对每个首着给出黑方理论应手，保证人机对局开局不落到搜索的漂移着法上。
+ * 全部经 book.test.ts 逐着重放校验。
  */
 export const BOOK_LINES: readonly BookLine[] = [
-  // ---- 中炮对屏风马 ----
+  // ---- 中炮（炮二平五）对屏风马 ----
   { name: '中炮过河车对屏风马', moves: ['h2e2', 'h9g7', 'h0g2', 'b9c7', 'i0h0', 'i9h9', 'h0h6', 'c6c5'] },
   { name: '中炮直车对屏风马', moves: ['h2e2', 'h9g7', 'h0g2', 'b9c7', 'i0h0', 'i9h9', 'c3c4', 'g6g5'] },
   { name: '中炮巡河车对屏风马', moves: ['h2e2', 'h9g7', 'h0g2', 'b9c7', 'i0h0', 'i9h9', 'h0h4'] },
@@ -61,16 +67,31 @@ export const BOOK_LINES: readonly BookLine[] = [
   { name: '列手炮直车', moves: ['h2e2', 'b7e7', 'h0g2', 'h9g7', 'i0h0', 'i9h9'] },
   { name: '列手炮直车对横车', moves: ['h2e2', 'b7e7', 'h0g2', 'h9g7', 'i0h0', 'i9i8', 'h0h4', 'b9c7'] },
 
-  // ---- 仙人指路 / 飞相 / 起马 / 过宫炮 ----
+  // ---- 中炮（炮八平五）：左右对称的另一侧中炮 ----
+  { name: '中炮（炮八平五）过河车对屏风马', moves: ['b2e2', 'b9c7', 'b0c2', 'h9g7', 'a0b0', 'a9b9', 'b0b6', 'g6g5'] },
+  { name: '中炮（炮八平五）直车对屏风马', moves: ['b2e2', 'b9c7', 'b0c2', 'h9g7', 'a0b0', 'a9b9', 'g3g4', 'c6c5'] },
+
+  // ---- 仙人指路（兵七进一 / 兵三进一） ----
   { name: '仙人指路对卒底炮', moves: ['c3c4', 'b7c7', 'h0g2', 'h9g7', 'b2e2', 'b9a7'] },
   { name: '仙人指路对挺卒', moves: ['c3c4', 'c6c5', 'h0g2', 'h9g7', 'i0h0', 'i9h9'] },
   { name: '仙人指路转中炮', moves: ['c3c4', 'h9g7', 'h2e2', 'b9c7', 'h0g2', 'i9h9'] },
+  { name: '仙人指路（兵三进一）对卒底炮', moves: ['g3g4', 'h7g7', 'b0c2', 'b9c7', 'h2e2', 'h9i7'] },
+  { name: '仙人指路（兵三进一）对挺卒', moves: ['g3g4', 'g6g5', 'b0c2', 'b9c7', 'a0b0', 'a9b9'] },
+
+  // ---- 飞相局（相七进五 / 相三进五） ----
   { name: '飞相局对左中炮', moves: ['c0e2', 'h7e7', 'h0g2', 'h9g7', 'b0c2', 'i9h9'] },
   { name: '飞相局对屏风马', moves: ['c0e2', 'h9g7', 'h0g2', 'b9c7', 'i0h0', 'i9i8'] },
+  { name: '飞相局（相三进五）对屏风马', moves: ['g0e2', 'b9c7', 'b0c2', 'h9g7', 'a0b0', 'a9a8'] },
+
+  // ---- 起马局（马二进三 / 马八进七） ----
   { name: '起马局对挺卒', moves: ['h0g2', 'c6c5', 'b0c2', 'h9g7', 'a0b0', 'b9c7'] },
   { name: '起马局对起马', moves: ['h0g2', 'h9g7', 'b0c2', 'b9c7', 'c3c4', 'c6c5'] },
+  { name: '起马局（马八进七）对起马', moves: ['b0c2', 'b9c7', 'h0g2', 'h9g7', 'g3g4', 'g6g5'] },
+
+  // ---- 过宫炮 / 横车 ----
   { name: '过宫炮对屏风马', moves: ['b2d2', 'h9g7', 'h0g2', 'b9c7', 'i0h0', 'c9e7'] },
   { name: '过宫炮对起马', moves: ['b2d2', 'h9g7', 'h0g2', 'b9c7', 'i0h0', 'i9h9'] },
+  { name: '横车局对屏风马', moves: ['i0i1', 'h9g7', 'h0g2', 'b9c7', 'i1d1', 'i9h9'] },
 ];
 
 /** 开局库最大介入深度（半着数）：超出后一律转入搜索。 */
@@ -93,6 +114,29 @@ export function positionKey(fen: string): string {
   return Fen.positionKey(fen);
 }
 
+/** 向表内某局面追加一条候选着法（同着法权重累加、ply 取最小）。 */
+function addMove(
+  pool: Map<string, Map<string, MutableBookMove>>,
+  key: string,
+  ucci: string,
+  weight: number,
+  ply: number,
+): void {
+  let moves = pool.get(key);
+  if (moves === undefined) {
+    moves = new Map<string, MutableBookMove>();
+    pool.set(key, moves);
+  }
+
+  const existing = moves.get(ucci);
+  if (existing !== undefined) {
+    existing.weight += weight;
+    existing.ply = Math.min(existing.ply, ply);
+  } else {
+    moves.set(ucci, { ucci, weight, ply });
+  }
+}
+
 /** 将一条变例的前缀局面全部登记进表（逐着走子，非法着法抛错）。 */
 function registerLine(pool: Map<string, Map<string, MutableBookMove>>, line: BookLine): void {
   const weight = line.weight ?? 1;
@@ -105,21 +149,7 @@ function registerLine(pool: Map<string, Map<string, MutableBookMove>>, line: Boo
       throw new Error(`开局库变例「${line.name}」第 ${ply + 1} 着非法：${ucci}`);
     }
 
-    const key = positionKey(board.toFen());
-    let moves = pool.get(key);
-    if (moves === undefined) {
-      moves = new Map<string, MutableBookMove>();
-      pool.set(key, moves);
-    }
-
-    const existing = moves.get(ucci);
-    if (existing !== undefined) {
-      existing.weight += weight;
-      existing.ply = Math.min(existing.ply, ply);
-    } else {
-      moves.set(ucci, { ucci, weight, ply });
-    }
-
+    addMove(pool, positionKey(board.toFen()), ucci, weight, ply);
     board.doMove(move);
   }
 }

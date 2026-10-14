@@ -42,8 +42,20 @@ describe('内置开局库（局面键哈希表）', () => {
     for (const ucci of firstMoves) {
       const move = Move.fromUcci(ucci) as Move;
       const notation = ChineseNotation.toChinese(board, move);
-      // 中炮类 / 仙人指路 / 飞相 / 起马 / 过宫炮 的首着均应属于这五种记法。
-      expect(['炮二平五', '兵七进一', '相七进五', '马二进三', '炮八平六']).toContain(notation);
+      // 库首着应覆盖主流首着：中炮（左右）、仙人指路（左右）、飞相（左右）、
+      // 起马（左右）、过宫炮与横车——不应出现软着。
+      expect([
+        '炮二平五',
+        '炮八平五',
+        '兵七进一',
+        '兵三进一',
+        '相七进五',
+        '相三进五',
+        '马二进三',
+        '马八进七',
+        '炮八平六',
+        '车一进一',
+      ]).toContain(notation);
     }
   });
 

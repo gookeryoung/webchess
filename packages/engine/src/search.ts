@@ -115,6 +115,12 @@ export interface SearchParams {
   cancelled?: () => boolean;
   /** 进度回调（每层完成）。 */
   onDepth?: (depth: number, score: number, pv: readonly Move[]) => void;
+  /**
+   * 根节点排除的着法（UCCI）：用于 MultiPV 逐路搜索——
+   * 逐次剔除已选着法再全宽搜索，得到真正的「第 N 佳着」，
+   * 而非浅层预评分挑出的近似候选。
+   */
+  rootExclude?: readonly string[];
 }
 
 const DEFAULT_DEPTH = 8;
@@ -162,12 +168,26 @@ export class Searcher {
     // （NNUE 增量 accumulator 仅在 FastPosition 上维护）；
     // 否则按 WASM 可用性选择，纯 TS 兜底。
     const useNnue = options?.nnue !== false && nnueReady();
-    this.pos = useNnue
-      ? new FastPosition()
-      : ((options?.wasm === false ? null : acquireWasmPosition()) ?? new FastPosition());
+    const wasmPos = useNnue || options?.wasm === false ? null : acquireWasmPosition();
+    if (useNnue) {
+      this.pos = new FastPosition({ nnue: true });
+      this.backend = 'nnue';
+    } else if (wasmPos !== null) {
+      this.pos = wasmPos;
+      this.backend = 'wasm';
+    } else {
+      // 兜底纯 TS 时必须显式关闭 NNUE：否则 `nnue:false` 的 A/B 基线
+      // 会静默用上 NNUE（FastPosition 默认 nnue 开启），基线失真。
+      this.pos = new FastPosition({ nnue: false });
+      this.backend = 'ts';
+    }
+
     this.moveBuf = this.pos.moveBuffer;
     this.rootMoves = this.pos.moveBuffer.subarray(0, MOVES_PER_PLY);
   }
+
+  /** 实际生效的着法生成 / 评估后端（诊断与 A/B 标签用）。 */
+  readonly backend: 'nnue' | 'wasm' | 'ts';
 
   /** 根着法缓冲（moveBuffer 前 256 项：根节点 ply=0，与 searchNode 的 ply≥1 区间无冲突）。 */
   private readonly rootMoves: Int32Array;
@@ -205,6 +225,28 @@ export class Searcher {
         pv: [],
         stats: { nodes: 0, depth: 0, elapsedMs: now() - start },
       };
+    }
+
+    // MultiPV 逐路搜索：就地剔除已选着法，使根节点只保留尚未选中的候选。
+    if (params.rootExclude !== undefined && params.rootExclude.length > 0) {
+      const banned = new Set(params.rootExclude);
+      let kept = 0;
+      for (let i = 0; i < this.rootCount; i++) {
+        const move = this.rootMoves[i];
+        if (!banned.has(this.toMove(move).toUcci())) {
+          this.rootMoves[kept++] = move;
+        }
+      }
+
+      this.rootCount = kept;
+      if (this.rootCount === 0) {
+        return {
+          bestMove: null,
+          score: -MATE_SCORE,
+          pv: [],
+          stats: { nodes: 0, depth: 0, elapsedMs: now() - start },
+        };
+      }
     }
 
     // 根着法初始排序：MVV-LVA（首轮后由各层实搜分接管）。

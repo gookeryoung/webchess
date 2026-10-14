@@ -86,11 +86,21 @@ function sliceInt8(data: DataView, offset: number, count: number): Int8Array {
 /**
  * 加载 NNUE 权重（WCNW 二进制）。重复加载以最后一次为准；
  * 格式不符返回 false（调用方回退手工评估）。
+ *
+ * 入参兼容 `ArrayBuffer` 与 `ArrayBufferView`（Node 的 `Buffer` / `Uint8Array`）：
+ * 只接受 `ArrayBuffer` 时，Node 侧脚本把 `readFileSync()` 的结果直接传进来会
+ * 静默加载失败（`new DataView(Buffer)` 抛错被吞），表现为「NNUE 明明加载了却仍走
+ * 手工评估的软着」——曾导致开局棋力诊断结论完全失真。
  */
-export function loadNnueWeights(data: ArrayBuffer): boolean {
+export function loadNnueWeights(data: ArrayBuffer | ArrayBufferView): boolean {
   try {
-    const view = new DataView(data);
-    if (data.byteLength < 20 || view.getUint32(0, true) !== 0x574e4357) {
+    // DataView 只能接受 ArrayBuffer，故对视图显式取其 buffer + 偏移 + 长度。
+    const view =
+      data instanceof ArrayBuffer
+        ? new DataView(data)
+        : new DataView(data.buffer as ArrayBuffer, data.byteOffset, data.byteLength);
+    const byteLength = view.byteLength;
+    if (byteLength < 20 || view.getUint32(0, true) !== 0x574e4357) {
       // magic "WCNW" 小端 u32。
       return false;
     }
@@ -118,7 +128,7 @@ export function loadNnueWeights(data: ArrayBuffer): boolean {
     off += HIDDEN;
     const b3 = sliceInt32(view, off, 1);
     off += 4;
-    if (off > data.byteLength) {
+    if (off > byteLength) {
       return false;
     }
 

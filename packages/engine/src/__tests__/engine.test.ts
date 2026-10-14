@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Board, Move, Rule } from '@webchess/core';
+import type { MultiPvInfo } from '@webchess/core';
 import { BuiltinEngine, createBuiltinEngine, Searcher } from '../index.js';
 
 function legalUcciSet(board: Board): Set<string> {
@@ -51,6 +52,37 @@ describe('内置搜索引擎', () => {
     expect(infos.length).toBe(3);
     expect(infos).toEqual([1, 2, 3]);
     expect(result.bestMove).not.toBeNull();
+  });
+
+  it('MultiPV 逐路给出不同着法且分值降序，第 1 路与单 PV 最佳一致', async () => {
+    const multi = new BuiltinEngine(4, 2000);
+    await multi.start();
+    const infos: MultiPvInfo[] = [];
+    multi.onInfo((info) => infos.push(info));
+    const result = await multi.go({
+      fen: new Board().toFen(),
+      depth: 4,
+      multiPv: 3,
+      moveTimeMs: 2400,
+    });
+
+    expect(infos).toHaveLength(3);
+    const firstMoves = infos.map((info) => info.pv[0]);
+    expect(new Set(firstMoves).size).toBe(3);
+    expect(infos[0]!.scoreCp).toBeGreaterThanOrEqual(infos[1]!.scoreCp);
+    expect(infos[1]!.scoreCp).toBeGreaterThanOrEqual(infos[2]!.scoreCp);
+    expect(result.bestMove).toBe(firstMoves[0]);
+
+    // 独立实例单 PV 最佳应与 MultiPV 第 1 路一致（逐路搜索即全宽第 N 佳着）。
+    const single = new BuiltinEngine(4, 2000);
+    await single.start();
+    const outcome = await single.go({
+      fen: new Board().toFen(),
+      depth: 4,
+      moveTimeMs: 800,
+      useBook: false,
+    });
+    expect(outcome.bestMove).toBe(firstMoves[0]);
   });
 
   it('Searcher 在大子力优势局面给出正分（红方视角）', () => {

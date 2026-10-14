@@ -204,7 +204,9 @@ if (args.nnueA || args.nnueB) {
   let bytes = null;
   for (const p of candidates) {
     try {
-      bytes = readFileSync(p).buffer;
+      // 直接传 Buffer：loadNnueWeights 支持 ArrayBufferView，避免 `.buffer`
+      // 在小文件（Buffer 来自共享池）时因 byteOffset 非 0 而读到错误数据。
+      bytes = readFileSync(p);
       break;
     } catch {
       // 尝试下一候选路径。
