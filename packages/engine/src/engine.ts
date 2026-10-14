@@ -274,6 +274,8 @@ export class BuiltinEngine implements EngineSession {
   async dispose(): Promise<void> {
     this.isReady = false;
     this.searcher.clear();
+    // 归还 WASM 内核实例（否则实例池被长期占用，后续引擎只能退化到纯 TS）。
+    this.searcher.dispose();
   }
 }
 

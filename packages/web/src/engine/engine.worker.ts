@@ -1,6 +1,6 @@
 import wasmUrl from '@webchess/engine/wasm/engine-core.wasm?url';
 import nnueUrl from '@webchess/engine/wasm/nnue-weights.bin?url';
-import { BuiltinEngine, initEngineWasm, loadNnueWeights } from '@webchess/engine';
+import { BuiltinEngine, initEngineWasm, loadNnueWeights, uploadNnueWeights } from '@webchess/engine';
 import { asWorkerScope, WorkerRequest, WorkerResponse } from './protocol.js';
 
 /**
@@ -42,7 +42,10 @@ try {
 try {
   const response = await fetch(nnueUrl);
   if (response.ok) {
-    loadNnueWeights(await response.arrayBuffer());
+    const weights = await response.arrayBuffer();
+    // 同一份权重同时供 TS 推理与 WASM 内核：上传成功时走法生成 + NNUE 前向都在 WASM。
+    loadNnueWeights(weights);
+    uploadNnueWeights(weights);
   }
 } catch {
   // 回退手工评估。

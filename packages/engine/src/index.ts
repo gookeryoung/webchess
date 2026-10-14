@@ -13,5 +13,13 @@ export {
   probeBookAtFen,
 } from './book.js';
 export type { BookLine, BookMove } from './book.js';
-export { initEngineWasm, isWasmCoreLoaded } from './wasmCore.js';
+export {
+  acquireWasmPosition,
+  initEngineWasm,
+  isWasmCoreLoaded,
+  isWasmNnueReady,
+  releaseWasmPosition,
+  uploadNnueWeights,
+  wasmPoolStats,
+} from './wasmCore.js';
 export { loadNnueWeights, nnueReady } from './nnue.js';

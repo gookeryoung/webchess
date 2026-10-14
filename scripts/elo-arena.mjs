@@ -15,6 +15,9 @@
  *   --wasm-a / --wasm-b  对应方启用 WASM 内核（须能读到 wasm 产物），
  *                        同参数对比即测 WASM 加速比（NPS）与行为一致性。
  *   --nnue-a / --nnue-b  对应方启用 NNUE 评估（须能读到权重产物；该方强制纯 TS 后端）。
+ *   --nnue-wasm-a / --nnue-wasm-b
+ *                        对应方启用 NNUE + WASM 内核（走法生成与 NNUE 前向都在 WASM；
+ *                        须能读到 wasm 与权重产物，NPS 显著高于纯 TS NNUE）。
  *   --lazy-a / --lazy-b  对应方启用懒评估边际（cp，0=关闭；须配合 --nnue-x）。
  *   --legacy-engine X    A 方外挂旧参数引擎 bundle（Texel 调参 A/B 基线，
  *                        由 git show HEAD 的 engine src 另行打包）。
@@ -26,7 +29,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Board, Rule } from '@webchess/core';
-import { Searcher, initEngineWasm, loadNnueWeights } from '@webchess/engine';
+import { Searcher, initEngineWasm, isWasmCoreLoaded, loadNnueWeights, uploadNnueWeights } from '@webchess/engine';
 
 function parseArgs(argv) {
   const args = {
@@ -40,6 +43,8 @@ function parseArgs(argv) {
     wasmB: false,
     nnueA: false,
     nnueB: false,
+    nnueWasmA: false,
+    nnueWasmB: false,
     lazyA: 0,
     lazyB: 0,
     legacyEngine: null,
@@ -68,6 +73,16 @@ function parseArgs(argv) {
 
     if (key === '--nnue-b') {
       args.nnueB = true;
+      continue;
+    }
+
+    if (key === '--nnue-wasm-a') {
+      args.nnueWasmA = true;
+      continue;
+    }
+
+    if (key === '--nnue-wasm-b') {
+      args.nnueWasmB = true;
       continue;
     }
 
@@ -180,7 +195,7 @@ const args = parseArgs(process.argv);
 
 // WASM 内核：任一方启用时先加载（Searcher 构造期自动获取实例）。
 // 路径依次尝试 cwd（仓库根运行）与 bundle 所在目录（任意位置运行）。
-if (args.wasmA || args.wasmB) {
+if (args.wasmA || args.wasmB || args.nnueWasmA || args.nnueWasmB) {
   const candidates = [
     resolve(process.cwd(), 'packages/engine/wasm/engine-core.wasm'),
     new URL('../packages/engine/wasm/engine-core.wasm', import.meta.url),
@@ -188,7 +203,9 @@ if (args.wasmA || args.wasmB) {
   let bytes = null;
   for (const p of candidates) {
     try {
-      bytes = readFileSync(p).buffer;
+      // 直接传 Buffer：initEngineWasm 支持视图入参并按偏移精确切片，
+      // 避免池化 Buffer 的 `.buffer`（64KB 池）被当作模块字节导致解析失败。
+      bytes = readFileSync(p);
       break;
     } catch {
       // 尝试下一候选路径。
@@ -200,8 +217,9 @@ if (args.wasmA || args.wasmB) {
   }
 }
 
-// NNUE 权重：任一方启用时先加载（Searcher 构造期检查 nnueReady）。
-if (args.nnueA || args.nnueB) {
+// NNUE 权重：任一方启用时先加载（Searcher 构造期检查 nnueReady）；
+// 若 WASM 内核已加载，同时上传到内核（--nnue-wasm-x 侧的走法生成 + NNUE 前向都在 WASM）。
+if (args.nnueA || args.nnueB || args.nnueWasmA || args.nnueWasmB) {
   const candidates = [
     resolve(process.cwd(), 'packages/engine/wasm/nnue-weights.bin'),
     new URL('../packages/engine/wasm/nnue-weights.bin', import.meta.url),
@@ -221,16 +239,34 @@ if (args.nnueA || args.nnueB) {
   if (!bytes || !loadNnueWeights(bytes)) {
     throw new Error('NNUE 权重加载失败（检查 packages/engine/wasm/nnue-weights.bin）');
   }
+
+  if (isWasmCoreLoaded() && !uploadNnueWeights(bytes)) {
+    throw new Error('NNUE 权重上传 WASM 内核失败');
+  }
 }
 
 const paramsA = { maxDepth: args.depthA, moveTimeMs: args.timeA };
 const paramsB = { maxDepth: args.depthB, moveTimeMs: args.timeB };
-// 后端定型：默认纯 TS + 手工评估（wasm:false / nnue:false），
-// --wasm-x 侧走自动获取，--nnue-x 侧强制纯 TS + NNUE 评估。
+// 后端定型：默认纯 TS + 手工评估（wasm:false / nnue:false）；
+// --wasm-x 走自动获取（内核已上传权重时为 nnue+wasm）；--nnue-x 强制纯 TS + NNUE；
+// --nnue-wasm-x 显式 NNUE + WASM（自动路径）。
 const tsOnly = { wasm: false, nnue: false };
 const nnueOptions = { wasm: false, nnue: true };
-const optionsA = args.nnueA ? { ...nnueOptions, lazyNnueMargin: args.lazyA } : args.wasmA ? undefined : tsOnly;
-const optionsB = args.nnueB ? { ...nnueOptions, lazyNnueMargin: args.lazyB } : args.wasmB ? undefined : tsOnly;
+const nnueWasmOptions = { nnue: true };
+const optionsA = args.nnueWasmA
+  ? { ...nnueWasmOptions, lazyNnueMargin: args.lazyA }
+  : args.nnueA
+    ? { ...nnueOptions, lazyNnueMargin: args.lazyA }
+    : args.wasmA
+      ? undefined
+      : tsOnly;
+const optionsB = args.nnueWasmB
+  ? { ...nnueWasmOptions, lazyNnueMargin: args.lazyB }
+  : args.nnueB
+    ? { ...nnueOptions, lazyNnueMargin: args.lazyB }
+    : args.wasmB
+      ? undefined
+      : tsOnly;
 // --legacy-engine：A 方换用外挂旧参数引擎（纯 TS，无 wasm 接入）。
 let legacySearcher = null;
 if (args.legacyEngine) {
@@ -246,16 +282,16 @@ const searcherA = legacySearcher
   : new Searcher({ ...legacyOptions, ...optionsA });
 const searcherB = new Searcher(optionsB);
 
-/** 后端标签（nnue > wasm > ts），附懒评估边际。 */
-function backendLabel(nnue, wasm, lazy) {
-  const base = nnue ? 'nnue' : wasm ? 'wasm' : 'ts';
+/** 后端标签（nnue+wasm > nnue > wasm > ts），附懒评估边际。 */
+function backendLabel(nnue, wasm, lazy, nnueWasm) {
+  const base = nnueWasm ? 'nnue+wasm' : nnue ? 'nnue' : wasm ? 'wasm' : 'ts';
   return lazy > 0 ? `${base}+lazy${lazy}` : base;
 }
 
 console.log(
   `--- 自对弈竞技场：A(depth=${args.depthA}, ${args.timeA}ms, ` +
-    `${legacySearcher ? 'legacy参数' : backendLabel(args.nnueA, args.wasmA, args.lazyA)}) vs ` +
-    `B(depth=${args.depthB}, ${args.timeB}ms, ${backendLabel(args.nnueB, args.wasmB, args.lazyB)})，` +
+    `${legacySearcher ? 'legacy参数' : backendLabel(args.nnueA, args.wasmA, args.lazyA, args.nnueWasmA)}) vs ` +
+    `B(depth=${args.depthB}, ${args.timeB}ms, ${backendLabel(args.nnueB, args.wasmB, args.lazyB, args.nnueWasmB)})，` +
     `共 ${args.games} 局${args.legacy ? '（legacy 特性）' : ''} ---`,
 );
 

@@ -2,7 +2,8 @@ import { Board, Move, Position } from '@webchess/core';
 import { FastPosition, MAX_PLY, moveFrom, moveTo } from './fastBoard.js';
 import { MATE_SCORE, PIECE_VALUE } from './evaluate.js';
 import { nnueReady } from './nnue.js';
-import { acquireWasmPosition } from './wasmCore.js';
+import { acquireWasmPosition, isWasmNnueReady, releaseWasmPosition } from './wasmCore.js';
+import type { WasmPosition } from './wasmCore.js';
 
 /**
  * 搜索用局面抽象：FastPosition（纯 TS）与 WasmPosition（WASM 内核）的公共结构。
@@ -149,10 +150,12 @@ export class Searcher {
   private readonly ttMoveArr = new Int32Array(TT_SIZE);
   private readonly ttMeta = new Int16Array(TT_SIZE);
 
-  /** 搜索局面（构造时定型：WASM 实例或纯 TS 实现）。 */
-  private readonly pos: SearchPosition;
+  /** 搜索局面（构造时定型：WASM 实例或纯 TS 实现；dispose 后降级为纯 TS）。 */
+  private pos: SearchPosition;
   /** 走法缓冲（即 pos.moveBuffer，WASM 后端为零拷贝线性内存视图）。 */
-  private readonly moveBuf: Int32Array;
+  private moveBuf: Int32Array;
+  /** 持有的 WASM 实例（未持有为 null）；dispose 时归还实例池。 */
+  private wasmPosition: WasmPosition | null = null;
   private readonly scoreBuf = new Int32Array(MAX_PLY * MOVES_PER_PLY);
   private readonly killers = new Int32Array(MAX_PLY * 2);
   private readonly history = new Int32Array(15 * 90);
@@ -171,18 +174,37 @@ export class Searcher {
     lazyNnueMargin: 0,
   };
 
+  /** 实际生效的着法生成 / 评估后端（诊断与 A/B 标签用；dispose 后降级会更新）。 */
+  backend: 'nnue+wasm' | 'nnue' | 'wasm' | 'ts';
+
   constructor(options?: SearcherOptions) {
     Object.assign(this.opt, options);
-    // 后端定型：NNUE 权重已加载且未禁用时评估质量优先，强制纯 TS 后端
-    // （NNUE 增量 accumulator 仅在 FastPosition 上维护）；
-    // 否则按 WASM 可用性选择，纯 TS 兜底。
+    // 后端定型优先级：
+    // 1. NNUE + WASM：权重已加载且内核已上传权重 → 走法生成与 NNUE 前向都在 WASM
+    //    （NPS 最高；NNUE 前向约占单节点耗时 2/3，下沉 WASM 收益最大）；
+    // 2. NNUE（纯 TS）：内核不支持 / wasm:false / 内核未加载；
+    // 3. WASM 手工评估；4. 纯 TS 手工评估。
     const useNnue = options?.nnue !== false && nnueReady();
-    const wasmPos = useNnue || options?.wasm === false ? null : acquireWasmPosition();
+    const wantWasm = options?.wasm !== false;
+    if (useNnue && wantWasm && isWasmNnueReady()) {
+      const wasmPos = acquireWasmPosition(true);
+      if (wasmPos !== null) {
+        this.pos = wasmPos;
+        this.wasmPosition = wasmPos;
+        this.backend = 'nnue+wasm';
+        this.moveBuf = this.pos.moveBuffer;
+        this.rootMoves = this.pos.moveBuffer.subarray(0, MOVES_PER_PLY);
+        return;
+      }
+    }
+
+    const wasmPos = !useNnue && wantWasm ? acquireWasmPosition(false) : null;
     if (useNnue) {
       this.pos = new FastPosition({ nnue: true });
       this.backend = 'nnue';
     } else if (wasmPos !== null) {
       this.pos = wasmPos;
+      this.wasmPosition = wasmPos;
       this.backend = 'wasm';
     } else {
       // 兜底纯 TS 时必须显式关闭 NNUE：否则 `nnue:false` 的 A/B 基线
@@ -195,11 +217,8 @@ export class Searcher {
     this.rootMoves = this.pos.moveBuffer.subarray(0, MOVES_PER_PLY);
   }
 
-  /** 实际生效的着法生成 / 评估后端（诊断与 A/B 标签用）。 */
-  readonly backend: 'nnue' | 'wasm' | 'ts';
-
   /** 根着法缓冲（moveBuffer 前 256 项：根节点 ply=0，与 searchNode 的 ply≥1 区间无冲突）。 */
-  private readonly rootMoves: Int32Array;
+  private rootMoves: Int32Array;
   private readonly rootScores = new Int32Array(MOVES_PER_PLY);
   private rootCount = 0;
 
@@ -923,5 +942,24 @@ export class Searcher {
     this.ttMeta.fill(0);
     this.killers.fill(0);
     this.history.fill(0);
+  }
+
+  /**
+   * 归还 WASM 内核实例（若持有）并把后端降级为纯 TS 位置。
+   * 归还后本实例仍可继续搜索，只是速度回落到纯 TS；重复调用幂等。
+   * 必须在没有进行中的搜索时调用（`search` 为同步调用，正常路径天然满足）。
+   */
+  dispose(): void {
+    if (this.wasmPosition === null) {
+      return;
+    }
+
+    releaseWasmPosition(this.wasmPosition);
+    this.wasmPosition = null;
+    const keepNnue = this.backend === 'nnue' || this.backend === 'nnue+wasm';
+    this.pos = new FastPosition({ nnue: keepNnue });
+    this.backend = keepNnue ? 'nnue' : 'ts';
+    this.moveBuf = this.pos.moveBuffer;
+    this.rootMoves = this.pos.moveBuffer.subarray(0, MOVES_PER_PLY);
   }
 }

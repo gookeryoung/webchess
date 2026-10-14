@@ -3,7 +3,8 @@ import { join } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { Board, cellIndex, Move, Piece, Position, Rule } from '@webchess/core';
 import { FastPosition, moveFrom, moveTo } from '../fastBoard.js';
-import { acquireWasmPosition, initEngineWasm, isWasmCoreLoaded } from '../wasmCore.js';
+import { acquireWasmPosition, initEngineWasm, isWasmCoreLoaded, releaseWasmPosition, wasmPoolStats } from '../wasmCore.js';
+import type { WasmPosition } from '../wasmCore.js';
 
 /** 走法编码 → UCCI（经内核 Move，保证坐标系语义一致）。 */
 function moveToUcci(move: number): string {
@@ -156,5 +157,38 @@ describe('WasmPosition — 与 FastPosition 逐项一致', () => {
     expect(a.cells[cellIndex(4, 6)]).toBe(Piece.Empty);
     expect(b.cells[cellIndex(4, 6)]).toBe(Piece.RedPawn);
     expect(a.keyLo).not.toBe(b.keyLo);
+  });
+
+  it('实例池：归还后可再取，超容时安全复用而非返回 null（不再静默降级纯 TS）', () => {
+    const baseline = wasmPoolStats();
+    expect(baseline.capacity).toBeGreaterThan(0);
+
+    const held: WasmPosition[] = [];
+    for (let i = 0; i < baseline.capacity + 3; i++) {
+      const pos = acquireWasmPosition();
+      expect(pos, `第 ${i + 1} 次 acquire`).not.toBeNull();
+      const acquired = pos as WasmPosition;
+      expect(acquired.instanceIndex).toBeGreaterThanOrEqual(0);
+      expect(acquired.instanceIndex).toBeLessThan(baseline.capacity);
+      held.push(acquired);
+    }
+
+    // 占用数不超过容量；超出部分计入同一实例的引用计数。
+    expect(wasmPoolStats().inUse).toBeLessThanOrEqual(baseline.capacity);
+
+    for (const pos of held) {
+      releaseWasmPosition(pos);
+    }
+
+    expect(wasmPoolStats().inUse).toBe(baseline.inUse);
+  });
+
+  it('实例池：重复归还是幂等的（引用计数不会变负）', () => {
+    const baseline = wasmPoolStats();
+    const pos = acquireWasmPosition() as WasmPosition;
+    releaseWasmPosition(pos);
+    releaseWasmPosition(pos);
+    releaseWasmPosition(pos);
+    expect(wasmPoolStats().inUse).toBe(baseline.inUse);
   });
 });

@@ -52,7 +52,21 @@ const I_SEETOUCH: usize = 3824; // 40 i32
 const I_MOVEBUF: usize = 4096; // MAX_PLY * MOVES_PER_PLY i32
 // clang-format on
 
-const INSTANCE_SIZE: usize = 4096 + (<usize>(MAX_PLY * MOVES_PER_PLY)) * 4;
+// ---- NNUE（WCNW 权重区 + 每实例双视角累加器）----
+/** WCNW 权重文件字节数（与 nnue.ts / trainer 导出一致）。 */
+const NNUE_BYTES: usize = 84088;
+/** 双视角累加器宽度（i32 个数）：红视角 0..31，黑视角 32..63。 */
+const NNUE_ACC: usize = 64;
+/** 每层 undo 快照宽度（i32 个数），与累加器等宽。 */
+const NNUE_UNDO: usize = 64;
+/** 输出层缩放分母（127 × 64），与 nnue.ts SCALE_OUT 一致。 */
+const NNUE_SCALE_OUT: i32 = 8128;
+
+/** 每实例额外区：NNUE 累加器 + MAX_PLY 层 undo 快照 + 使用开关。 */
+const I_NNUE_ACC_POS: usize = I_MOVEBUF + (<usize>(MAX_PLY * MOVES_PER_PLY)) * 4;
+const I_NNUE_UNDO_POS: usize = I_NNUE_ACC_POS + NNUE_ACC * 4;
+const I_NNUE_USE: usize = I_NNUE_UNDO_POS + (<usize>MAX_PLY) * NNUE_UNDO * 4;
+const INSTANCE_SIZE: usize = I_NNUE_USE + 16;
 
 // ---- 共享表布局（TABLES 基址起，i32 计） ----
 const T_ZOB_LO: usize = 0; // 1350 i32
@@ -63,16 +77,35 @@ const T_AREA: usize = 16260; // 90 i32
 const T_OFF: usize = 16620; // 方向偏移表：KING8/ADV8/BISHOP8/EYE8/KNIGHT16/LEG16/REV16 = 80 i32（320 字节）
 const T_KNOWLEDGE: usize = 16940; // 10 i32：机动性/知识项常量 + FULL_PHASE + THREAT_FULL（紧随 T_OFF 之后，避免重叠）
 const TABLES_SIZE: usize = 16992; // T_KNOWLEDGE + 40 字节，向上 16 字节对齐
+/** NNUE 权重区：紧随共享表，TS 侧把 WCNW 原始字节直接写入此处。 */
+const T_NNUE: usize = TABLES_SIZE;
+const TABLES_SIZE_FULL: usize = TABLES_SIZE + NNUE_BYTES;
 
 /** initTables 输入暂存区（TS 侧经视图写入后传入其内部偏移）。 */
 export const STAGING: usize = memory.data(16304);
 
-/** 静态数据区：共享表 + 实例块（编译期定容，运行期不增长）。 */
+/** NNUE 前向散射缓冲（a1[64] / a2[32] / a3[32]；评估不重入，模块级即可）。 */
+const NNUE_SCRATCH: usize = memory.data(64 * 4 + 32 * 4 + 32 * 4 + 16);
+
+/** 静态数据区：共享表 + NNUE 权重 + 实例块（编译期定容，运行期不增长）。 */
 const BLOCK: usize = memory.data(
-  <i32>(TABLES_SIZE + (<usize>INSTANCE_COUNT) * INSTANCE_SIZE),
+  <i32>(TABLES_SIZE_FULL + (<usize>INSTANCE_COUNT) * INSTANCE_SIZE),
 );
 const TABLES: usize = BLOCK;
-const INSTANCES: usize = BLOCK + TABLES_SIZE;
+const INSTANCES: usize = BLOCK + TABLES_SIZE_FULL;
+
+/** NNUE 是否已注入权重（TS 侧上传后调用 enableNnue）。 */
+let nnueOn: i32 = 0;
+
+/** NNUE 权重区地址（TS 侧写入 NNUE_BYTES 字节）。 */
+export function nnueWeightsPtr(): usize {
+  return TABLES + T_NNUE;
+}
+
+/** 标记 NNUE 权重已就绪（各实例在下次 setFromBoard 时重建累加器）。 */
+export function enableNnue(): void {
+  nnueOn = 1;
+}
 
 export function instanceBase(index: i32): usize {
   return INSTANCES + (<usize>index) * INSTANCE_SIZE;
@@ -202,12 +235,230 @@ function pieceValue(piece: i32): i32 { return load<i32>(TABLES + T_VALUE + (<usi
 function area(sq: i32): i32 { return load<i32>(TABLES + T_AREA + (<usize>sq) * 4); }
 // clang-format on
 
+// ---- NNUE：权重层偏移与访问器（WCNW 头 20 字节，层序与 nnue.ts 一致）----
+const N_W1: usize = 20; // int16[1260*32]
+const N_B1: usize = N_W1 + 1260 * 32 * 2; // int16[32]
+const N_W2: usize = N_B1 + 32 * 2; // int8[64*32]
+const N_B2: usize = N_W2 + 64 * 32; // int32[32]
+const N_W2B: usize = N_B2 + 32 * 4; // int8[32*32]
+const N_B2B: usize = N_W2B + 32 * 32; // int32[32]
+const N_W3: usize = N_B2B + 32 * 4; // int8[32]
+const N_B3: usize = N_W3 + 32; // int32[1]
+
+/** 视角棋子类别：黑子（8-14）→ 0-6，红子（1-7）→ 7-13（与 nnue.ts 一致）。 */
+function blackViewClass(piece: i32): i32 {
+  return piece >= BLACK_KING ? piece - 8 : piece + 6;
+}
+
+/** 黑视角格下标行镜像：(9 - y) * 9 + x。 */
+function mirrorSq(sq: i32): i32 {
+  return (9 - sq / 9) * 9 + sq % 9;
+}
+
+function nnW1(feature: i32, j: i32): i32 {
+  return load<i16>(TABLES + T_NNUE + N_W1 + (<usize>(feature * 32 + j)) * 2);
+}
+
+function nnB1(j: i32): i32 {
+  return load<i16>(TABLES + T_NNUE + N_B1 + (<usize>j) * 2);
+}
+
+function nnW2(j: i32, i: i32): i32 {
+  return load<i8>(TABLES + T_NNUE + N_W2 + (<usize>(j * 64 + i)));
+}
+
+function nnB2(j: i32): i32 {
+  return load<i32>(TABLES + T_NNUE + N_B2 + (<usize>j) * 4);
+}
+
+function nnW2B(j: i32, i: i32): i32 {
+  return load<i8>(TABLES + T_NNUE + N_W2B + (<usize>(j * 32 + i)));
+}
+
+function nnB2B(j: i32): i32 {
+  return load<i32>(TABLES + T_NNUE + N_B2B + (<usize>j) * 4);
+}
+
+function nnW3(i: i32): i32 {
+  return load<i8>(TABLES + T_NNUE + N_W3 + (<usize>i));
+}
+
+function nnB3(): i32 {
+  return load<i32>(TABLES + T_NNUE + N_B3);
+}
+
+function nnAcc(base: usize, i: i32): i32 {
+  return load<i32>(base + I_NNUE_ACC_POS + (<usize>i) * 4);
+}
+
+function nnAccSet(base: usize, i: i32, v: i32): void {
+  store<i32>(base + I_NNUE_ACC_POS + (<usize>i) * 4, v);
+}
+
+function nnAccAdd(base: usize, i: i32, delta: i32): void {
+  const p = base + I_NNUE_ACC_POS + (<usize>i) * 4;
+  store<i32>(p, load<i32>(p) + delta);
+}
+
+/** 向下取整除法（AS 的 `/` 为截断除法，负被除数需修正 —— 与 TS Math.floor 一致）。 */
+function floorDiv(a: i32, b: i32): i32 {
+  const q = a / b;
+  return a % b != 0 && a < 0 ? q - 1 : q;
+}
+
+/** 从当前棋盘全量重建双视角累加器（NNUE 实例的 setFromBoard 时调用）。 */
+function nnueRefresh(base: usize): void {
+  if (nnueOn == 0 || getI(base, I_NNUE_USE) != 1) {
+    return;
+  }
+
+  for (let j: i32 = 0; j < 32; j++) {
+    const b = nnB1(j);
+    nnAccSet(base, j, b);
+    nnAccSet(base, 32 + j, b);
+  }
+
+  const cs = cells(base);
+  for (let sq: i32 = 0; sq < 90; sq++) {
+    const piece: i32 = load<u8>(cs + (<usize>sq));
+    if (piece == EMPTY) {
+      continue;
+    }
+
+    const redIdx = (piece - 1) * 90 + sq;
+    const blkIdx = blackViewClass(piece) * 90 + mirrorSq(sq);
+    for (let j: i32 = 0; j < 32; j++) {
+      nnAccAdd(base, j, nnW1(redIdx, j));
+      nnAccAdd(base, 32 + j, nnW1(blkIdx, j));
+    }
+  }
+}
+
+/** make 前压栈并增量更新累加器（移动子 + 被吃子；ply 为 make 前层数）。 */
+function nnuePush(base: usize, piece: i32, from: i32, to: i32, captured: i32, ply: i32): void {
+  if (nnueOn == 0 || getI(base, I_NNUE_USE) != 1) {
+    return;
+  }
+
+  const undo = base + I_NNUE_UNDO_POS + (<usize>ply) * (NNUE_UNDO * 4);
+  for (let i: i32 = 0; i < 64; i++) {
+    store<i32>(undo + (<usize>i) * 4, nnAcc(base, i));
+  }
+
+  const redMoved = (piece - 1) * 90;
+  const blkMoved = blackViewClass(piece) * 90;
+  const redFrom = redMoved + from;
+  const redTo = redMoved + to;
+  const blkFrom = blkMoved + mirrorSq(from);
+  const blkTo = blkMoved + mirrorSq(to);
+  for (let j: i32 = 0; j < 32; j++) {
+    nnAccAdd(base, j, nnW1(redTo, j) - nnW1(redFrom, j));
+    nnAccAdd(base, 32 + j, nnW1(blkTo, j) - nnW1(blkFrom, j));
+  }
+
+  if (captured != EMPTY) {
+    const redCap = (captured - 1) * 90 + to;
+    const blkCap = blackViewClass(captured) * 90 + mirrorSq(to);
+    for (let j: i32 = 0; j < 32; j++) {
+      nnAccAdd(base, j, -nnW1(redCap, j));
+      nnAccAdd(base, 32 + j, -nnW1(blkCap, j));
+    }
+  }
+}
+
+/** unmake 时按栈恢复累加器（ply 已递减，与 make 时的快照层号一致）。 */
+function nnuePop(base: usize, ply: i32): void {
+  if (nnueOn == 0 || getI(base, I_NNUE_USE) != 1) {
+    return;
+  }
+
+  const undo = base + I_NNUE_UNDO_POS + (<usize>ply) * (NNUE_UNDO * 4);
+  for (let i: i32 = 0; i < 64; i++) {
+    nnAccSet(base, i, load<i32>(undo + (<usize>i) * 4));
+  }
+}
+
+/**
+ * NNUE 前向（走子方视角 cp）：双视角拼接 → cReLU → 32 → 32 → 1，
+ * 逐位对齐 nnue.ts（全部整数运算；溢出已按权重上界核算，最坏 2.1e8 < 2^31）。
+ */
+export function evaluateNnue(base: usize): i32 {
+  if (nnueOn == 0) {
+    return 0;
+  }
+
+  const a1 = NNUE_SCRATCH;
+  const a2 = NNUE_SCRATCH + 64 * 4;
+  const a3 = NNUE_SCRATCH + 96 * 4;
+  const red: i32 = getI(base, I_RED);
+  const myBase: i32 = red == 1 ? 0 : 32;
+  const oppBase: i32 = red == 1 ? 32 : 0;
+  for (let i: i32 = 0; i < 32; i++) {
+    let v = (nnAcc(base, myBase + i) * 127 + 128) >> 8;
+    if (v < 0) {
+      v = 0;
+    } else if (v > 127) {
+      v = 127;
+    }
+
+    store<i32>(a1 + (<usize>i) * 4, v);
+    v = (nnAcc(base, oppBase + i) * 127 + 128) >> 8;
+    if (v < 0) {
+      v = 0;
+    } else if (v > 127) {
+      v = 127;
+    }
+
+    store<i32>(a1 + (<usize>(32 + i)) * 4, v);
+  }
+
+  for (let j: i32 = 0; j < 32; j++) {
+    let h = nnB2(j);
+    for (let i: i32 = 0; i < 64; i++) {
+      h += nnW2(j, i) * load<i32>(a1 + (<usize>i) * 4);
+    }
+
+    let v = floorDiv(h * 127 + 4064, NNUE_SCALE_OUT);
+    if (v < 0) {
+      v = 0;
+    } else if (v > 127) {
+      v = 127;
+    }
+
+    store<i32>(a2 + (<usize>j) * 4, v);
+  }
+
+  for (let j: i32 = 0; j < 32; j++) {
+    let h = nnB2B(j);
+    for (let i: i32 = 0; i < 32; i++) {
+      h += nnW2B(j, i) * load<i32>(a2 + (<usize>i) * 4);
+    }
+
+    let v = floorDiv(h * 127 + 4064, NNUE_SCALE_OUT);
+    if (v < 0) {
+      v = 0;
+    } else if (v > 127) {
+      v = 127;
+    }
+
+    store<i32>(a3 + (<usize>j) * 4, v);
+  }
+
+  let out = nnB3();
+  for (let i: i32 = 0; i < 32; i++) {
+    out += nnW3(i) * load<i32>(a3 + (<usize>i) * 4);
+  }
+
+  return floorDiv(out * 400, NNUE_SCALE_OUT);
+}
+
 function dirOff(off: usize, i: i32): i32 {
   return load<i32>(TABLES + T_OFF + (off + (<usize>i)) * 4);
 }
 
 /** 从 TS 侧已写入的棋盘矩阵重建全部增量状态（O(90)）。 */
-export function setFromBoard(base: usize, redToMove: i32): void {
+export function setFromBoard(base: usize, redToMove: i32, useNnue: i32): void {
+  setI(base, I_NNUE_USE, useNnue);
   const cs = cells(base);
   let keyLo: i32 = 0;
   let keyHi: i32 = 0;
@@ -301,6 +552,10 @@ export function setFromBoard(base: usize, redToMove: i32): void {
   setI(base, I_KLOSTACK, keyLo);
   setI(base, I_KHISTACK, keyHi);
   setI(base, I_NULLSTACK, 0);
+  // NNUE 按实例开关：手工评估实例不维护累加器（避免每条 make/unmake 白付 64 项成本）。
+  if (useNnue == 1) {
+    nnueRefresh(base);
+  }
 }
 
 /** 原地走子（伪合法即可），增量更新全部状态；走后用 inCheck 判定合法性。 */
@@ -312,6 +567,9 @@ export function make(base: usize, move: i32): void {
   const captured: i32 = load<u8>(cs + (<usize>to));
   const p = piece * 90;
   const ply: i32 = getI(base, I_PLY);
+
+  // NNUE：压栈 + 更新双视角累加器（必须在棋盘变更前记录增量，ply 用 make 前层号）。
+  nnuePush(base, piece, from, to, captured, ply);
 
   store<i32>(base + I_UNDOMOVE + (<usize>ply) * 4, move);
   store<i32>(base + I_UNDOCAP + (<usize>ply) * 4, captured);
@@ -387,6 +645,8 @@ export function make(base: usize, move: i32): void {
 export function unmake(base: usize): void {
   const ply: i32 = getI(base, I_PLY) - 1;
   setI(base, I_PLY, ply);
+  // NNUE：恢复 make 前压栈的累加器快照（ply 已递减到 make 时的层号）。
+  nnuePop(base, ply);
   const move: i32 = load<i32>(base + I_UNDOMOVE + (<usize>ply) * 4);
   const captured: i32 = load<i32>(base + I_UNDOCAP + (<usize>ply) * 4);
   const from = move & 127;

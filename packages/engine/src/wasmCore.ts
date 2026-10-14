@@ -41,7 +41,7 @@ interface CoreExports {
     pieceValuePtr: number,
     knowledgePtr: number,
   ): void;
-  setFromBoard(base: number, redToMove: number): void;
+  setFromBoard(base: number, redToMove: number, useNnue: number): void;
   make(base: number, move: number): void;
   unmake(base: number): void;
   makeNull(base: number): void;
@@ -52,28 +52,78 @@ interface CoreExports {
   isRepetition(base: number): number;
   see(base: number, to: number, firstFrom: number): number;
   evaluateRed(base: number): number;
+  /** NNUE 权重区地址与开关（旧版内核无这些导出，故可能为 undefined）。 */
+  nnueWeightsPtr?: () => number;
+  enableNnue?: () => void;
+  evaluateNnue?: (base: number) => number;
   memory: WebAssembly.Memory;
 }
 
+/** WCNW 权重文件字节数（与 assembly/engine-core.ts 的 NNUE_BYTES 一致）。 */
+const NNUE_BYTES = 84088;
+
 let core: CoreExports | null = null;
-let instancePool: (WasmPosition | null)[] = [];
+/** 实例引用计数（0 = 空闲）；容量固定为 AS 侧的 INSTANCE_COUNT。 */
+const instanceRefs: number[] = new Array(INSTANCE_COUNT).fill(0);
+/** 全部占用时的轮转游标（安全复用，见 acquireWasmPosition 文档）。 */
+let roundRobin = 0;
+/** NNUE 权重是否已上传到 WASM 内核。 */
+let nnueUploaded = false;
 
 /** WASM 核心是否已加载。 */
 export function isWasmCoreLoaded(): boolean {
   return core !== null;
 }
 
+/** WASM 侧 NNUE 是否可用（内核含 NNUE 且权重已上传）。 */
+export function isWasmNnueReady(): boolean {
+  return core !== null && nnueUploaded;
+}
+
+/**
+ * 上传 NNUE 权重的原始 WCNW 字节到 WASM 内核并启用。
+ *
+ * 必须在 `initEngineWasm` 之后调用（Worker 中先加载 wasm、再加载权重）；
+ * 内核不含 NNUE 导出或权重长度不符时返回 false（Searcher 回退 TS + NNUE）。
+ */
+export function uploadNnueWeights(data: ArrayBuffer | ArrayBufferView): boolean {
+  if (core === null || core.nnueWeightsPtr === undefined || core.enableNnue === undefined) {
+    return false;
+  }
+
+  const bytes =
+    data instanceof ArrayBuffer
+      ? new Uint8Array(data)
+      : new Uint8Array(data.buffer as ArrayBuffer, data.byteOffset, data.byteLength);
+  if (bytes.byteLength !== NNUE_BYTES) {
+    return false;
+  }
+
+  new Uint8Array(core.memory.buffer, core.nnueWeightsPtr(), NNUE_BYTES).set(bytes);
+  core.enableNnue();
+  nnueUploaded = true;
+  return true;
+}
+
 /**
  * 加载 WASM 搜索核心（幂等；失败静默返回 false，引擎回退纯 TS）。
  * @param bytes wasm 模块字节（调用方自行从平台获取）。
+ *
+ * 入参兼容 `ArrayBuffer` 与 `ArrayBufferView`：Node 的 `readFileSync` 对小文件
+ * 返回**池化 Buffer**（`.buffer` 是整个 64KB 池，含无关数据），直接传 `.buffer`
+ * 会让 `WebAssembly.instantiate` 解析失败；视图入参按 byteOffset/byteLength 精确切片。
  */
-export async function initEngineWasm(bytes: ArrayBuffer): Promise<boolean> {
+export async function initEngineWasm(bytes: ArrayBuffer | ArrayBufferView): Promise<boolean> {
   if (core !== null) {
     return true;
   }
 
   try {
-    const { instance } = await WebAssembly.instantiate(bytes, {
+    const module =
+      bytes instanceof ArrayBuffer
+        ? bytes
+        : (bytes.buffer as ArrayBuffer).slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    const { instance } = await WebAssembly.instantiate(module, {
       env: { abort: () => {
         throw new Error('engine-core wasm abort');
       } },
@@ -107,7 +157,8 @@ export async function initEngineWasm(bytes: ArrayBuffer): Promise<boolean> {
     );
     exports.initTables(staging, staging + 5400, staging + 10800, staging + 16200, staging + 16260);
     core = exports;
-    instancePool = new Array(INSTANCE_COUNT).fill(null);
+    instanceRefs.fill(0);
+    roundRobin = 0;
     return true;
   } catch {
     core = null;
@@ -115,21 +166,59 @@ export async function initEngineWasm(bytes: ArrayBuffer): Promise<boolean> {
   }
 }
 
-/** 从实例池取一个空闲 WasmPosition；池耗尽或未加载时返回 null。 */
-export function acquireWasmPosition(): WasmPosition | null {
+/**
+ * 从实例池取一个 WasmPosition；内核未加载时返回 null。
+ *
+ * 池策略（容量 = AS 静态布局的 INSTANCE_COUNT，不可增长）：
+ * 1. 优先取空闲实例（引用计数 0）；
+ * 2. 全部占用时按轮转**复用**一个实例并递增其引用计数，而不是返回 null。
+ *    这依赖一个不变量：`Searcher.search()` 是同步调用，同一时刻只有一个实例
+ *    真正处于搜索中，且每次搜索都以 `setFromBoard` 重建全部增量状态，
+ *    因此共享实例不会串扰。这样「池耗尽 → 静默降级为纯 TS」不再发生；
+ *    若将来引入并发搜索（多 Worker 各自独立加载模块，不受影响；同模块内异步搜索
+ *    则会破坏该不变量），必须改为拒绝复用。
+ *
+ * @param useNnue 该实例是否维护 NNUE 累加器（手工评估实例应传 false，
+ *   否则每条 make/unmake 都会白付 64 项累加成本）。
+ */
+export function acquireWasmPosition(useNnue = false): WasmPosition | null {
   if (core === null) {
     return null;
   }
 
-  for (let i = 0; i < instancePool.length; i++) {
-    if (instancePool[i] === null) {
-      const pos = new WasmPosition(core, i);
-      instancePool[i] = pos;
-      return pos;
-    }
+  let index = instanceRefs.indexOf(0);
+  if (index < 0) {
+    index = roundRobin % INSTANCE_COUNT;
+    roundRobin = (roundRobin + 1) % INSTANCE_COUNT;
   }
 
-  return null;
+  instanceRefs[index]++;
+  return new WasmPosition(core, index, useNnue);
+}
+
+/**
+ * 归还实例（按引用计数递减，幂等）。
+ * 调用方必须保证该实例上没有正在进行的搜索（search 为同步调用，正常路径天然满足）。
+ */
+export function releaseWasmPosition(pos: WasmPosition): void {
+  const index = pos.instanceIndex;
+  if (index < 0 || index >= instanceRefs.length) {
+    return;
+  }
+
+  if (instanceRefs[index] > 0) {
+    instanceRefs[index]--;
+  }
+}
+
+/** 实例池统计（测试与诊断用）。 */
+export function wasmPoolStats(): {
+  readonly capacity: number;
+  readonly inUse: number;
+  readonly free: number;
+} {
+  const inUse = instanceRefs.filter((refs) => refs > 0).length;
+  return { capacity: instanceRefs.length, inUse, free: instanceRefs.length - inUse };
 }
 
 /**
@@ -143,12 +232,18 @@ export class WasmPosition {
   readonly moveBuffer: Int32Array;
   private readonly core: CoreExports;
   private readonly base: number;
+  /** 池内实例下标（releaseWasmPosition 用）。 */
+  readonly instanceIndex: number;
+  /** 本实例是否维护 NNUE 累加器（构造时定型）。 */
+  private readonly useNnue: boolean;
   /** 实例标量区视图（I_RED 起 17 个 i32）。 */
   private readonly state: Int32Array;
 
-  constructor(core: CoreExports, index: number) {
+  constructor(core: CoreExports, index: number, useNnue: boolean) {
     this.core = core;
     this.base = core.instanceBase(index);
+    this.instanceIndex = index;
+    this.useNnue = useNnue;
     this.cells = new Uint8Array(core.memory.buffer, this.base + I_CELLS, 90);
     this.moveBuffer = new Int32Array(
       core.memory.buffer,
@@ -229,7 +324,7 @@ export class WasmPosition {
   /** 从内核 Board 重建局面（棋盘矩阵复制进 WASM 内存后重建增量状态）。 */
   setFromBoard(board: Board): this {
     this.cells.set(board.cells);
-    this.core.setFromBoard(this.base, board.redToMove ? 1 : 0);
+    this.core.setFromBoard(this.base, board.redToMove ? 1 : 0, this.useNnue ? 1 : 0);
     return this;
   }
 
@@ -291,8 +386,16 @@ export class WasmPosition {
     return this.core.see(this.base, to, firstFrom);
   }
 
-  /** 叶子静态评估（走子方视角，negamax 约定）。 */
+  /**
+   * 叶子静态评估（走子方视角，negamax 约定）。
+   * 本实例按 NNUE 定型且权重已上传内核时走 WASM 侧 NNUE 前向，
+   * 否则回退手工评估（红方视角取反）。
+   */
   evaluateFull(): number {
+    if (this.useNnue && nnueUploaded && this.core.evaluateNnue !== undefined) {
+      return this.core.evaluateNnue(this.base);
+    }
+
     const red = this.core.evaluateRed(this.base);
     return this.redToMove ? red : -red;
   }
