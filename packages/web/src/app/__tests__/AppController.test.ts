@@ -15,6 +15,7 @@ import type {
   EngineOptions,
   EngineSession,
   GoParams,
+  MoveSource,
   MultiPvInfo,
   SearchResult,
 } from '@webchess/core';
@@ -115,9 +116,13 @@ class ScriptedEngine implements EngineSession {
     this.isReady = false;
   }
 
-  /** 释放一次挂起的走子搜索并返回指定 bestmove。 */
-  releaseGo(bestMove: string): void {
-    this.gates.shift()?.({ bestMove, ponderMove: null });
+  /** 释放一次挂起的走子搜索并返回指定 bestmove（可标注着法来源）。 */
+  releaseGo(bestMove: string, source?: MoveSource): void {
+    this.gates.shift()?.(
+      source === undefined
+        ? { bestMove, ponderMove: null }
+        : { bestMove, ponderMove: null, source },
+    );
   }
 
   /** 已发出的走子（非分析）请求数。 */
@@ -467,5 +472,18 @@ describe('AppController 人机模式回归（busy 门闸竞争 / 悔棋方向 / 
     await vi.waitFor(() => expect(engine.moveRequests).toHaveLength(1));
     engine.releaseGo('h9g7');
     await vi.waitFor(() => expect(fresh.getSnapshot().history).toHaveLength(2));
+  });
+
+  it('引擎命中开局库（查表）时状态栏标注来源', async () => {
+    controller.onBoardClick(new Position(7, 7));
+    controller.onBoardClick(new Position(4, 7)); // 用户走子，引擎开始思考
+    await vi.waitFor(() => expect(engine.moveRequests).toHaveLength(1));
+
+    engine.releaseGo('h9g7', 'book');
+    await vi.waitFor(() => expect(controller.getSnapshot().history).toHaveLength(2));
+
+    const status = controller.getSnapshot().status;
+    expect(status.startsWith('黑方：')).toBe(true);
+    expect(status).toContain('（开局库）');
   });
 });

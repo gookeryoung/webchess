@@ -90,6 +90,15 @@ export class Fen {
     return `${rows.join('/')} ${side} - - 0 ${board.rounds}`;
   }
 
+  /**
+   * 局面键：取 FEN 的「棋盘 + 走子方」两字段，剔除回合数。
+   * 同一局面经不同着法顺序（换位）到达时键相同，供判重与开局库查表使用。
+   */
+  static positionKey(fen: string): string {
+    const parts = fen.trim().split(/\s+/);
+    return parts.length >= 2 ? `${parts[0]} ${parts[1]}` : fen.trim();
+  }
+
   /** 解析棋盘字段并校验：10 行、每行 9 列、棋子合法、双方各一将帅且在九宫内。 */
   private static parseBoard(boardField: string): Uint8Array {
     const rows = boardField.split('/');

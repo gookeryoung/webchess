@@ -10,7 +10,7 @@ import {
   Rule,
   SearchResult,
 } from '@webchess/core';
-import { probeBook } from './book.js';
+import { probeBookAtFen } from './book.js';
 import { Searcher } from './search.js';
 
 /**
@@ -54,9 +54,6 @@ export function depthFromOptions(options: EngineOptions | undefined): number | u
 /** MultiPV 每路搜索的时限下限/上限（毫秒）。 */
 const MULTIPV_TIME_MIN = 150;
 const MULTIPV_TIME_MAX = 800;
-
-/** 起始局面 FEN（开局库仅从此局面出发的对局中介入）。 */
-const START_FEN = new Board().toFen();
 
 /** 失误采样：弱化档位以该概率放弃最佳着、随机走合法着（模拟人类失误）。 */
 function blunderRate(strengthDepth: number | undefined): number {
@@ -127,17 +124,12 @@ export class BuiltinEngine implements EngineSession {
     const multiPv = params.multiPv ?? 1;
     const cancelled = () => this.stopRequested || token?.cancelled === true;
 
-    // 开局库：仅在时间制人机对局（无显式 depth、非分析模式）且起始局面下介入，
-    // 命中则零延迟出库，开局阶段不浪费搜索算力。
-    if (
-      params.depth === undefined &&
-      params.infinite !== true &&
-      multiPv <= 1 &&
-      params.moves !== undefined &&
-      params.moves.length > 0 &&
-      params.fen === START_FEN
-    ) {
-      const bookMove = probeBook(params.moves, this.rng);
+    // 开局库（查表）：非分析模式（MultiPV = 1）、非无限搜索且未显式禁用时，
+    // 用当前局面键直查哈希表（换位感知），命中即零延迟出库。
+    // 注意：不能要求 `params.depth === undefined`——人机对局恒带深度上限，
+    // 旧条件导致开局库在真实对局中从未生效。
+    if (params.useBook !== false && params.infinite !== true && multiPv <= 1) {
+      const bookMove = probeBookAtFen(board.toFen(), this.rng);
       if (bookMove !== null && this.isLegalUcci(board, bookMove)) {
         this.infoEmitter.emit({
           index: 1,
@@ -148,7 +140,7 @@ export class BuiltinEngine implements EngineSession {
           lowerBound: false,
           pv: [bookMove],
         });
-        return { bestMove: bookMove, ponderMove: null };
+        return { bestMove: bookMove, ponderMove: null, source: 'book' };
       }
     }
 
@@ -174,7 +166,7 @@ export class BuiltinEngine implements EngineSession {
     });
 
     if (this.stopRequested && outcome.stats.depth === 0) {
-      return { bestMove: null, ponderMove: null };
+      return { bestMove: null, ponderMove: null, source: 'search' };
     }
 
     let bestUcci = outcome.bestMove?.toUcci() ?? null;
@@ -192,6 +184,7 @@ export class BuiltinEngine implements EngineSession {
     return {
       bestMove: bestUcci,
       ponderMove: outcome.pv[1]?.toUcci() ?? null,
+      source: 'search',
     };
   }
 
@@ -218,7 +211,7 @@ export class BuiltinEngine implements EngineSession {
   ): SearchResult {
     const rootMoves = Rule.getAllLegalMoves(board, board.redToMove);
     if (rootMoves.length === 0) {
-      return { bestMove: null, ponderMove: null };
+      return { bestMove: null, ponderMove: null, source: 'search' };
     }
 
     // 阶段一：浅层预评分（depth ≤ 2，每着短时限，通常几毫秒即完成）。
@@ -272,7 +265,7 @@ export class BuiltinEngine implements EngineSession {
       }
     }
 
-    return { bestMove: bestUcci, ponderMove: null };
+    return { bestMove: bestUcci, ponderMove: null, source: 'search' };
   }
 
   applyOptions(options: EngineOptions): Promise<void> {

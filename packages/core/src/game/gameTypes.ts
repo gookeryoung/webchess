@@ -9,6 +9,12 @@ export enum GameMode {
   PlayWithEngine = 'play-with-engine',
 }
 
+/** 对局结果（进行中 / 红胜 / 黑胜 / 和棋）。 */
+export type GameResult = 'ongoing' | 'red-win' | 'black-win' | 'draw';
+
+/** 和棋原因。 */
+export type DrawReason = 'repetition' | 'natural-limit' | 'material';
+
 /**
  * 一条走子历史记录：move（结构化）、ucci（UCCI 字符串）、chs（中文纵线记谱）、isRedMove。
  * 悔棋从尾部弹出并重放恢复局面。
@@ -38,4 +44,8 @@ export interface MoveAppliedEventArgs {
   readonly isCheckmate: boolean;
   /** 走子后对方是否被困毙。 */
   readonly isStalemate: boolean;
+  /** 走子后是否构成和棋（三次重复局面 / 自然限着）。 */
+  readonly isDraw: boolean;
+  /** 和棋原因；非和棋为 null。 */
+  readonly drawReason: DrawReason | null;
 }

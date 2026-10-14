@@ -11,8 +11,10 @@ describe('内置搜索引擎', () => {
     const engine = new BuiltinEngine(3, 3000);
     await engine.start();
     const fen = new Board().toFen();
-    const result = await engine.go({ fen, depth: 3 });
+    // useBook:false —— 本用例校验搜索结果，开局库由 book.test.ts 覆盖。
+    const result = await engine.go({ fen, depth: 3, useBook: false });
     expect(result.bestMove).not.toBeNull();
+    expect(result.source).toBe('search');
     expect(legalUcciSet(new Board())).toContain(result.bestMove);
   });
 
@@ -83,7 +85,7 @@ describe('内置引擎强度设置', () => {
 
     const depths: number[] = [];
     engine.onInfo((info) => depths.push(info.depth));
-    const result = await engine.go({ fen: new Board().toFen(), depth: 10, moveTimeMs: 500 });
+    const result = await engine.go({ fen: new Board().toFen(), depth: 10, moveTimeMs: 500, useBook: false });
 
     expect(result.bestMove).not.toBeNull();
     expect(Math.max(...depths)).toBeLessThanOrEqual(3);
@@ -96,7 +98,7 @@ describe('内置引擎强度设置', () => {
 
     const depths: number[] = [];
     engine.onInfo((info) => depths.push(info.depth));
-    await engine.go({ fen: new Board().toFen(), depth: 10, moveTimeMs: 500 });
+    await engine.go({ fen: new Board().toFen(), depth: 10, moveTimeMs: 500, useBook: false });
 
     expect(depths.length).toBeGreaterThan(0);
     expect(Math.max(...depths)).toBe(1);
@@ -110,7 +112,7 @@ describe('内置引擎强度设置', () => {
 
     const depths: number[] = [];
     engine.onInfo((info) => depths.push(info.depth));
-    await engine.go({ fen: new Board().toFen(), depth: 4, moveTimeMs: 3000 });
+    await engine.go({ fen: new Board().toFen(), depth: 4, moveTimeMs: 3000, useBook: false });
 
     expect(Math.max(...depths)).toBe(4);
   });

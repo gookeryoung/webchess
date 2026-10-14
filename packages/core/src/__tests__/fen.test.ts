@@ -64,3 +64,22 @@ describe('非法 FEN 报出字段名', () => {
     }
   });
 });
+
+describe('Fen.positionKey（局面判重 / 开局库查表键）', () => {
+  it('剔除回合数字段，仅保留棋盘 + 走子方', () => {
+    const boardField = new Board().toFen().split(' ')[0];
+    expect(Fen.positionKey(`${boardField} w - - 0 1`)).toBe(`${boardField} w`);
+    expect(Fen.positionKey(`${boardField} w - - 0 99`)).toBe(`${boardField} w`);
+  });
+
+  it('走子方不同则键不同', () => {
+    const boardField = new Board().toFen().split(' ')[0];
+    expect(Fen.positionKey(`${boardField} w - - 0 1`)).not.toBe(
+      Fen.positionKey(`${boardField} b - - 0 1`),
+    );
+  });
+
+  it('兼容仅两字段的短 FEN', () => {
+    expect(Fen.positionKey('9/9 w')).toBe('9/9 w');
+  });
+});

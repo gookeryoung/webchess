@@ -11,6 +11,8 @@ function makeSnapshot(overrides: Partial<AppSnapshot> = {}): AppSnapshot {
     fen: 'rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w',
     redToMove: true,
     isGameOver: false,
+    result: 'ongoing',
+    isDraw: false,
     history: [],
     lastMove: null,
     lastMoveCapture: null,
@@ -144,14 +146,23 @@ describe('Hud', () => {
 
   it('元信息行：走子方 / 残局进度 / 忙闲 / 结束标志', () => {
     renderHud(
-      makeSnapshot({ busy: true, isGameOver: true, solvedCount: 6 }),
+      makeSnapshot({ busy: true, isGameOver: true, result: 'black-win', solvedCount: 6 }),
       makeController(),
     );
 
     expect(screen.getByText('红方走子')).toBeInTheDocument();
     expect(screen.getByText('残局 6/50 已过关')).toBeInTheDocument();
     expect(screen.getByText('思考中…')).toBeInTheDocument();
-    expect(screen.getByText('对局结束')).toBeInTheDocument();
+    expect(screen.getByText('黑方胜')).toBeInTheDocument();
+  });
+
+  it('判和局面显示和棋标志', () => {
+    renderHud(
+      makeSnapshot({ isGameOver: true, isDraw: true, result: 'draw' }),
+      makeController(),
+    );
+
+    expect(screen.getByText('和棋')).toBeInTheDocument();
   });
 
   it('GB18030 未就绪时给出降级提示', () => {

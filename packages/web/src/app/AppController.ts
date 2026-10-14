@@ -4,6 +4,7 @@ import {
   EngineOptions,
   EngineSession,
   GameMode,
+  GameResult,
   GameSession,
   HistoryRecord,
   LessonController,
@@ -13,6 +14,7 @@ import {
   ManualDocument,
   ManualFormatException,
   Move,
+  MoveAppliedEventArgs,
   MoveNode,
   MultiPvInfo,
   Piece,
@@ -70,6 +72,10 @@ export interface AppSnapshot {
   fen: string;
   redToMove: boolean;
   isGameOver: boolean;
+  /** 对局结果（进行中 / 红胜 / 黑胜 / 和棋）。 */
+  result: GameResult;
+  /** 是否判和（三次重复 / 自然限着）。 */
+  isDraw: boolean;
   history: readonly HistoryRecord[];
   lastMove: Move | null;
   /** 最近一着被吃的棋子编码（无吃子为 null），供走子动画淡出。 */
@@ -193,6 +199,8 @@ export class AppController {
       fen: board.toFen(),
       redToMove: board.redToMove,
       isGameOver: this.session.isGameOver,
+      result: this.session.result,
+      isDraw: this.session.isDraw,
       history: this.session.history,
       lastMove: this.lastMove,
       lastMoveCapture: this.lastMoveCapture,
@@ -815,16 +823,7 @@ export class AppController {
 
   // ---------- 内核事件 ----------
 
-  private onMoveApplied(e: {
-    move: Move;
-    chinese: string;
-    isCapture: boolean;
-    capturedPiece: number;
-    isRedMove: boolean;
-    isCheck: boolean;
-    isCheckmate: boolean;
-    isStalemate: boolean;
-  }): void {
+  private onMoveApplied(e: MoveAppliedEventArgs): void {
     // 无论是否处于重放，均记录最后一着的被吃子（重放时逐着覆盖，终点值即为目标着的值）。
     this.lastMoveCapture = Piece.isValid(e.capturedPiece) ? e.capturedPiece : null;
     if (this.replaying) {
@@ -846,8 +845,17 @@ export class AppController {
       this.setStatus(`将军！${e.chinese}`);
     } else if (e.isStalemate) {
       this.setStatus(e.isRedMove ? '黑方困毙，红方胜' : '红方困毙，黑方胜');
+    } else if (e.isDraw) {
+      this.setStatus(
+        e.drawReason === 'repetition' ? '和棋（同一局面三次出现）' : '和棋（自然限着：长时间无吃子）',
+      );
     } else if (this.manualController.isOpen === false) {
-      this.setStatus(`${e.isRedMove ? '红' : '黑'}方：${e.chinese}`);
+      // 人机模式下引擎应手命中开局库（查表）时明确标注来源，便于用户理解瞬时出着。
+      const fromBook =
+        this.session.mode === GameMode.PlayWithEngine &&
+        !e.isRedMove &&
+        this.session.lastEngineSource === 'book';
+      this.setStatus(`${e.isRedMove ? '红' : '黑'}方：${e.chinese}${fromBook ? '（开局库）' : ''}`);
     }
 
     // 延迟到微任务：人机模式下人类走子后，submitMove 会在同一同步块内

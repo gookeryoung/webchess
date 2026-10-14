@@ -174,3 +174,113 @@ describe('GameSession 对局流转与忙闲门闸', () => {
     expect(bare.history).toHaveLength(2);
   });
 });
+
+describe('GameSession 对局收束（判和与时限）', () => {
+  /** 两匹马来回跳：4 半着回到起始局面，8 半着第三次出现即判和。 */
+  const SHUTTLE = ['h0g2', 'h9g7', 'g2h0', 'g7h9'];
+
+  it('同一局面三次出现判和，此后拒绝继续走子', () => {
+    const session = new GameSession();
+    const draws: boolean[] = [];
+    session.onMoveApplied((e) => draws.push(e.isDraw));
+
+    for (let round = 0; round < 2; round++) {
+      for (const ucci of SHUTTLE) {
+        expect(session.tryPlayMove(move(ucci))).toBe(true);
+      }
+    }
+
+    expect(draws.filter(Boolean)).toHaveLength(1);
+    expect(session.isDraw).toBe(true);
+    expect(session.drawReason).toBe('repetition');
+    expect(session.result).toBe('draw');
+    expect(session.isGameOver).toBe(true);
+    // 判和后不再接受走子。
+    expect(session.tryPlayMove(move('h0g2'))).toBe(false);
+  });
+
+  it('悔棋撤销导致判和的一着后恢复进行中', () => {
+    const session = new GameSession();
+    for (let round = 0; round < 2; round++) {
+      for (const ucci of SHUTTLE) {
+        session.tryPlayMove(move(ucci));
+      }
+    }
+
+    expect(session.isDraw).toBe(true);
+    expect(session.undo()).toBe(true);
+    expect(session.isDraw).toBe(false);
+    expect(session.result).toBe('ongoing');
+    // 撤销后局面回到第 7 着后，轮到黑方，可继续走子并再次判和。
+    expect(session.tryPlayMove(move('g7h9'))).toBe(true);
+    expect(session.isDraw).toBe(true);
+  });
+
+  it('连续无吃子达到自然限着判和（阈值可配置）', () => {
+    const session = new GameSession();
+    session.naturalLimitPlies = 4;
+    const reasons: (string | null)[] = [];
+    session.onMoveApplied((e) => reasons.push(e.drawReason));
+
+    for (const ucci of ['h0g2', 'h9g7', 'b0c2', 'b9c7']) {
+      expect(session.tryPlayMove(move(ucci))).toBe(true);
+    }
+
+    expect(session.isDraw).toBe(true);
+    expect(session.drawReason).toBe('natural-limit');
+    expect(reasons[reasons.length - 1]).toBe('natural-limit');
+  });
+
+  it('吃子重置自然限着计数', () => {
+    const session = new GameSession();
+    session.naturalLimitPlies = 3;
+    expect(session.loadFen('4k4/9/9/4p4/9/9/4P4/9/9/4K4 w - - 0 1')).toBe(true);
+    expect(session.tryPlayMove(move('e3e4'))).toBe(true); // 红兵进一
+    expect(session.tryPlayMove(move('e6e5'))).toBe(true); // 黑卒进一
+    expect(session.tryPlayMove(move('e4e5'))).toBe(true); // 红兵吃卒 → 计数归零
+    expect(session.isDraw).toBe(false);
+  });
+
+  it('将死局面 result 为胜方且 isDraw 为 false（胜优先于和）', () => {
+    const session = new GameSession();
+    expect(session.loadFen('3k5/9/9/9/9/9/9/9/3R5/4K4 b - - 0 1')).toBe(true);
+    expect(session.isGameOver).toBe(true);
+    expect(session.result).toBe('red-win');
+    expect(session.isDraw).toBe(false);
+  });
+
+  it('残局子力少时走子时限缩短（人机等待更短）', async () => {
+    const fake = new FakeEngineSession();
+    const session = new GameSession(fake);
+    session.attachEngine(fake);
+    session.setMode(GameMode.PlayWithEngine);
+
+    // 单车对孤将（车马炮合计 1 ≤ 阈值）→ 残局时限；该局面有进攻子力，非死和。
+    expect(session.loadFen('5k3/9/9/9/9/9/9/9/9/2R1K4 w - - 0 1')).toBe(true);
+    expect(session.isGameOver).toBe(false);
+    const task = session.requestEngineMoveAsync();
+    await fake.waitGoRequestedAsync();
+    expect(fake.requests[0].moveTimeMs).toBe(GameSession.EndgameMoveTimeMs);
+    fake.release('c0c1');
+    expect(await task).toBe(true);
+  });
+
+  it('引擎着法来源被记录（开局库 / 搜索）', async () => {
+    const fake = new FakeEngineSession();
+    const session = new GameSession(fake);
+    session.attachEngine(fake);
+    session.setMode(GameMode.PlayWithEngine);
+
+    const bookTask = session.requestEngineMoveAsync();
+    await fake.waitGoRequestedAsync();
+    fake.release('h2e2', 'book');
+    expect(await bookTask).toBe(true);
+    expect(session.lastEngineSource).toBe('book');
+
+    const searchTask = session.requestEngineMoveAsync();
+    await fake.waitGoRequestedAsync();
+    fake.release('h9g7', 'search');
+    expect(await searchTask).toBe(true);
+    expect(session.lastEngineSource).toBe('search');
+  });
+});

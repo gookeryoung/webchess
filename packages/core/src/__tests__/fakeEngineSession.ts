@@ -3,6 +3,7 @@ import {
   EngineOptions,
   EngineSession,
   GoParams,
+  MoveSource,
   MultiPvInfo,
   SearchResult,
 } from '../engine/engineTypes.js';
@@ -12,7 +13,7 @@ export class FakeEngineSession implements EngineSession {
   readonly requests: GoParams[] = [];
   readonly options: EngineOptions[] = [];
   private readonly infoListeners = new Set<(info: MultiPvInfo) => void>();
-  private releaseFn: ((bestMove: string | null) => void) | null = null;
+  private releaseFn: ((bestMove: string | null, source?: MoveSource) => void) | null = null;
   private waiters: (() => void)[] = [];
   private stopCount = 0;
 
@@ -38,7 +39,8 @@ export class FakeEngineSession implements EngineSession {
     this.requests.push(params);
     this.notifyWaiters();
     return new Promise<SearchResult>((resolve) => {
-      this.releaseFn = (bestMove) => resolve({ bestMove, ponderMove: null });
+      this.releaseFn = (bestMove, source) =>
+        resolve(source === undefined ? { bestMove, ponderMove: null } : { bestMove, ponderMove: null, source });
       token?.onCancel(() => {
         this.releaseFn = null;
         resolve({ bestMove: null, ponderMove: null });
@@ -76,11 +78,11 @@ export class FakeEngineSession implements EngineSession {
     }
   }
 
-  /** 释放挂起的搜索并返回 bestmove。 */
-  release(bestMove: string | null = null): void {
+  /** 释放挂起的搜索并返回 bestmove（可标注着法来源）。 */
+  release(bestMove: string | null = null, source?: MoveSource): void {
     const fn = this.releaseFn;
     this.releaseFn = null;
-    fn?.(bestMove);
+    fn?.(bestMove, source);
   }
 
   private notifyWaiters(): void {

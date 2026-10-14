@@ -40,13 +40,28 @@ export type {
   EngineOptions,
   EngineSession,
   GoParams,
+  MoveSource,
   MultiPvInfo,
   SearchResult,
 } from './engine/engineTypes.js';
 
 // ---- 对局 / 练习 ----
-export type { HistoryRecord, MoveAppliedEventArgs } from './game/gameTypes.js';
+export type {
+  DrawReason,
+  GameResult,
+  HistoryRecord,
+  MoveAppliedEventArgs,
+} from './game/gameTypes.js';
 export { GameMode } from './game/gameTypes.js';
+export {
+  ENDGAME_TABLE,
+  endgamePhase,
+  endgameTableSize,
+  isMaterialDeadDraw,
+  lookupEndgame,
+  materialSignature,
+} from './game/endgameTable.js';
+export type { EndgameEntry, EndgamePhase } from './game/endgameTable.js';
 export { GameSession } from './game/gameSession.js';
 export type { PuzzleDefinition, PuzzleMoveResult } from './game/puzzleTypes.js';
 export { PuzzleMoveNode } from './game/puzzleTypes.js';

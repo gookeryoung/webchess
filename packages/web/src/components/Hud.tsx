@@ -134,7 +134,10 @@ export function Hud({
         <span>{snapshot.redToMove ? '红方走子' : '黑方走子'}</span>
         <span>残局 {snapshot.solvedCount}/{snapshot.puzzleTotal} 已过关</span>
         {snapshot.busy ? <span className="busy">思考中…</span> : null}
-        {snapshot.isGameOver ? <span className="over">对局结束</span> : null}
+        {snapshot.isDraw ? <span className="over">和棋</span> : null}
+        {!snapshot.isDraw && snapshot.isGameOver ? (
+          <span className="over">{snapshot.result === 'red-win' ? '红方胜' : '黑方胜'}</span>
+        ) : null}
         {snapshot.gb18030Ready ? null : <span className="warn">GB18030 未就绪（中文棋谱元信息降级）</span>}
       </div>
 

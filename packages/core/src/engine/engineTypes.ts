@@ -25,7 +25,15 @@ export interface GoParams {
   infinite?: boolean;
   /** MultiPV 路数。 */
   multiPv?: number;
+  /**
+   * 是否允许查开局库（默认 true）。
+   * 分析模式（MultiPV > 1）与自对弈强度测量可显式置 false，保证纯搜索结果。
+   */
+  useBook?: boolean;
 }
+
+/** 着法来源：开局库查表命中 / 搜索得出。 */
+export type MoveSource = 'book' | 'search';
 
 /** 搜索结果。 */
 export interface SearchResult {
@@ -33,6 +41,8 @@ export interface SearchResult {
   bestMove: string | null;
   /** UCCI 思考着法（ponder）。 */
   ponderMove: string | null;
+  /** 着法来源（未实现标注的引擎可省略）。 */
+  source?: MoveSource;
 }
 
 /** MultiPV 单路评估信息。 */
